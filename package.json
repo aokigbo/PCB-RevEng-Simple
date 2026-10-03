@@ -1,0 +1,17 @@
+{
+  "name": "pcb-reveng-simple",
+  "private": true,
+  "version": "1.0.0",
+  "description": "A focused, file-based PCB reverse engineering workspace",
+  "scripts": {
+    "test": "node --test tests/*.test.cjs",
+    "start": "python3 -m http.server 8080 --bind 127.0.0.1",
+    "test:browser": "node tests/browser.cjs",
+    "format": "prettier --write index.html css/*.css js/*.js tests/*.cjs docs/*.md README.md UPSTREAM-NOTICE.md package.json .prettierrc.json .github/workflows/*.yml",
+    "format:check": "prettier --check index.html css/*.css js/*.js tests/*.cjs docs/*.md README.md UPSTREAM-NOTICE.md package.json .prettierrc.json .github/workflows/*.yml"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0",
+    "prettier": "3.9.9"
+  }
+}

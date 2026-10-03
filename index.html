@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#141c25" />
+    <title>PCB RevEng Simple</title>
+    <link rel="stylesheet" href="css/style.css" />
+  </head>
+  <body>
+    <header>
+      <span class="brand" title="PCB RevEng Simple">PCB<span> / </span></span>
+      <input
+        id="project-name"
+        aria-label="Project name"
+        value="Untitled board"
+        spellcheck="false"
+      />
+      <span id="save-state" role="status">Unsaved</span>
+      <nav aria-label="Project actions">
+        <button id="new" title="New project · Ctrl+N">New</button>
+        <button id="open" title="Open project · Ctrl+O">Open</button>
+        <span class="separator"></span>
+        <button id="undo" title="Undo · Ctrl+Z" aria-label="Undo">↶</button>
+        <button id="redo" title="Redo · Ctrl+Shift+Z" aria-label="Redo">↷</button>
+        <button id="save-as" title="Save As · Ctrl+Shift+S">Save As</button>
+        <button id="save" class="primary" title="Save · Ctrl+S">Save</button>
+        <details id="export-menu">
+          <summary>Export <span>⌄</span></summary>
+          <div class="menu">
+            <button id="export-net">KiCad netlist (.net)</button
+            ><button id="export-bom">BOM (.csv)</button>
+          </div>
+        </details>
+      </nav>
+    </header>
+    <div id="browser-notice" class="notice" hidden>
+      Direct project saving requires desktop Chrome or Edge on localhost or HTTPS. This browser
+      cannot save back to a project file.
+    </div>
+    <main>
+      <nav id="tools" aria-label="Editing tools">
+        <button data-tool="select" class="active" title="Select · V">
+          <span class="tool-icon">↖</span>Select<kbd>V</kbd>
+        </button>
+        <button data-tool="component" title="Component · C">
+          <span class="tool-icon">▣</span>Component<kbd>C</kbd>
+        </button>
+        <button data-tool="trace" title="Trace · T">
+          <span class="tool-icon">⌁</span>Trace<kbd>T</kbd>
+        </button>
+        <button data-tool="via" title="Via · B">
+          <span class="tool-icon">⊙</span>Via<kbd>B</kbd>
+        </button>
+        <button data-tool="measure" title="Measure and align · M">
+          <span class="tool-icon">↔</span>Measure<kbd>M</kbd>
+        </button>
+        <a class="help-link" href="docs/USER-GUIDE.md" target="_blank" title="Read the user guide"
+          >Guide ↗</a
+        >
+      </nav>
+      <section id="board" aria-label="PCB workspace">
+        <canvas
+          id="canvas"
+          tabindex="0"
+          aria-label="PCB editing canvas. Use the tools to place components, traces and vias."
+        ></canvas>
+        <div id="empty-state">
+          <div class="eyebrow">FROM PHOTOGRAPH TO CONNECTIVITY</div>
+          <h1>Start with your board.</h1>
+          <p>
+            Add a front or back photograph,<br />then measure a known distance to set the scale.
+          </p>
+          <div>
+            <button class="primary" data-import="front">Add front photo</button
+            ><button data-import="back">Add back photo</button>
+          </div>
+          <p class="subtle">Your work lives in a .pcbrev file you choose.</p>
+        </div>
+        <div id="canvas-hint" role="status">
+          Select an object to inspect it · Scroll to zoom · Space + drag to pan
+        </div>
+      </section>
+      <aside id="inspector" aria-label="Properties"></aside>
+    </main>
+    <footer>
+      <div class="segmented" aria-label="Board view">
+        <button data-view="front" class="active">Front</button><button data-view="back">Back</button
+        ><button data-view="both">Both</button>
+      </div>
+      <label
+        >Draw on
+        <select id="draw-side">
+          <option value="front">Front</option>
+          <option value="back">Back</option>
+        </select></label
+      >
+      <label class="opacity"
+        >Front
+        <input
+          id="front-opacity"
+          aria-label="Front photo opacity"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value="1"
+      /></label>
+      <label class="opacity"
+        >Back
+        <input
+          id="back-opacity"
+          aria-label="Back photo opacity"
+          type="range"
+          min="0"
+          max="1"
+          step="0.05"
+          value="0.5"
+      /></label>
+      <details id="visibility-menu">
+        <summary>Show</summary>
+        <div class="menu above">
+          <label><input type="checkbox" id="show-components" checked /> Components</label
+          ><label><input type="checkbox" id="show-traces" checked /> Traces</label
+          ><label><input type="checkbox" id="show-vias" checked /> Vias</label
+          ><label><input type="checkbox" id="grid" /> 1 mm grid</label>
+        </div>
+      </details>
+      <button id="fit" title="Fit board · F">Fit</button><span id="zoom">100%</span
+      ><span id="coordinates">0.00, 0.00 mm</span>
+    </footer>
+    <div id="toast" role="status" hidden></div>
+    <input type="file" id="photo-input" accept="image/png,image/jpeg,image/webp" hidden />
+    <script src="js/catalog.js"></script>
+    <script src="js/document.js"></script>
+    <script src="js/geometry.js"></script>
+    <script src="js/connectivity.js"></script>
+    <script src="js/registration.js"></script>
+    <script src="js/files.js"></script>
+    <script src="js/export.js"></script>
+    <script src="js/canvas.js"></script>
+    <script src="js/editor.js"></script>
+    <script src="js/workspace.js"></script>
+  </body>
+</html>
