@@ -135,7 +135,7 @@ function pathTrace(ctx, points) {
 }
 function renderComponent(ctx, c, ghost = false) {
   const selected = Editor.selection?.object === c;
-  const scale = State.pxPerMm * c.scale;
+  const scale = State.pxPerMm;
   ctx.save();
   ctx.translate(c.x, c.y);
   ctx.rotate((c.rot * Math.PI) / 180);
@@ -145,7 +145,7 @@ function renderComponent(ctx, c, ghost = false) {
     ctx.fillStyle = selected ? "#42635640" : "#1b283940";
     ctx.lineWidth = 1.2 / View.zoom / scale;
     ctx.beginPath();
-    if (c.body.shape === "circle") ctx.arc(0, 0, Math.max(c.body.w, c.body.h) / 2, 0, Math.PI * 2);
+    if (c.body.shape === "circle") ctx.ellipse(0, 0, c.body.w / 2, c.body.h / 2, 0, 0, Math.PI * 2);
     else ctx.rect(-c.body.w / 2, -c.body.h / 2, c.body.w, c.body.h);
     ctx.fill();
     ctx.stroke();
@@ -164,7 +164,7 @@ function renderComponent(ctx, c, ghost = false) {
     if (through(p)) {
       ctx.fillStyle = "#111820";
       ctx.beginPath();
-      ctx.arc(p.xmm, p.ymm, (p.hole || p.w * 0.4) / 2, 0, Math.PI * 2);
+      ctx.arc(p.xmm, p.ymm, p.hole / 2, 0, Math.PI * 2);
       ctx.fill();
     }
   });
@@ -258,6 +258,17 @@ function renderCanvas() {
         ctx.stroke();
       }
     }
+  const corners = selectionResizeCorners();
+  if (corners.length) {
+    ctx.strokeStyle = "#baf5df";
+    ctx.fillStyle = "#e1fff5";
+    ctx.lineWidth = 1 / View.zoom;
+    pathTrace(ctx, corners);
+    ctx.closePath();
+    ctx.stroke();
+    const size = 7 / View.zoom;
+    for (const p of corners) ctx.fillRect(p.x - size / 2, p.y - size / 2, size, size);
+  }
   if (Editor.tool === "component" && Editor.preview) {
     ctx.globalAlpha = 0.7;
     renderComponent(
@@ -314,6 +325,35 @@ function renderCanvas() {
   }
   ctx.restore();
   document.getElementById("zoom").textContent = Math.round(View.zoom * 100) + "%";
+}
+function selectionResizeCorners() {
+  const s = Editor.selection;
+  if (Editor.tool !== "select" || Editor.mode || Editor.padTarget || !View.components || !s)
+    return [];
+  if (s.type === "component" && sideVisible(s.object.side)) return bodyCornersWorld(s.object);
+  if (s.type === "pad" && padVisible(s.object, s.object.pins[s.index]))
+    return padCornersWorld(s.object, s.object.pins[s.index]);
+  return [];
+}
+function resizeHandleAt(p) {
+  const corners = selectionResizeCorners();
+  if (!corners.length) return null;
+  const center = { x: (corners[0].x + corners[2].x) / 2, y: (corners[0].y + corners[2].y) / 2 };
+  let nearest = null,
+    distance = 7 / View.zoom;
+  for (const corner of corners) {
+    const d = Math.hypot(p.x - corner.x, p.y - corner.y);
+    if (d < distance) {
+      distance = d;
+      nearest = corner;
+    }
+  }
+  // Keep the centre available for moving pads whose handles overlap at low zoom.
+  if (!nearest || Math.hypot(p.x - center.x, p.y - center.y) < distance) return null;
+  return {
+    corner: nearest,
+    cursor: (nearest.x - center.x) * (nearest.y - center.y) >= 0 ? "nwse-resize" : "nesw-resize",
+  };
 }
 function hitTest(p) {
   const tol = 5 / View.zoom,

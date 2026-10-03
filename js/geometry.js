@@ -4,7 +4,7 @@
 /* ---------- component geometry ---------- */
 /* pin position in world coords. Back-side components are mirrored in X (as seen from front). */
 function pinWorldPos(comp, pin) {
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   let x = pin.xmm * s,
     y = pin.ymm * s;
   if (comp.side === "back") x = -x;
@@ -21,7 +21,7 @@ function compFootprint(comp) {
 /* footprint-local mm ⇄ world px (same rotate/mirror convention as pinWorldPos) — used by
    the visual pad editor to place handles and read the cursor back into pad coordinates */
 function compMmToWorld(comp, mx, my) {
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   let x = mx * s,
     y = my * s;
   if (comp.side === "back") x = -x;
@@ -31,7 +31,7 @@ function compMmToWorld(comp, mx, my) {
   return { x: comp.x + x * ca - y * sa, y: comp.y + x * sa + y * ca };
 }
 function compWorldToMm(comp, wx, wy) {
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   let dx = wx - comp.x,
     dy = wy - comp.y;
   const a = (-comp.rot * Math.PI) / 180,
@@ -56,13 +56,28 @@ function padCornersWorld(comp, fpin) {
   ];
 }
 
+function bodyCornersWorld(comp) {
+  return padCornersWorld(comp, { ...comp.body, xmm: 0, ymm: 0 });
+}
+
+// The pointer is in world pixels; only dimensions change, never either centre.
+function resizeDimensions(comp, point, pad = null) {
+  const q = compWorldToMm(comp, point.x, point.y);
+  const minimum =
+    pad?.shape === "circle" && pad.tht !== false ? Math.max(0.01, pad.hole + 0.1) : 0.01;
+  const clamp = (v) => Math.max(minimum, Math.min(10000, v));
+  const w = clamp(2 * Math.abs(q.x - (pad?.xmm || 0)));
+  const h = clamp(2 * Math.abs(q.y - (pad?.ymm || 0)));
+  return pad?.shape === "circle" ? { w: Math.max(w, h), h: Math.max(w, h) } : { w, h };
+}
+
 /* distance in world pixels from a world point to a pad's ACTUAL edge (0 when the
    point is inside the pad). Rectangular SMD pads use their real rectangle,
-   respecting component rotation, scale and back-side mirror, instead of a round
+   respecting component rotation and back-side mirror, instead of a round
    max(w,h)/2 hitbox. This stops long rectangular pads from behaving like big
    circles that grab traces they do not really touch. */
 function pinEdgeDist(comp, fpin, wx, wy) {
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   let dx = wx - comp.x,
     dy = wy - comp.y;
   const a = (-comp.rot * Math.PI) / 180,
@@ -83,7 +98,7 @@ function pinEdgeDist(comp, fpin, wx, wy) {
    component, and the half-extents. (Back-side mirror flips an axis sign, which doesn't
    change the box, so it's ignored here.) */
 function pinOBB(comp, fpin) {
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   const wp = pinWorldPos(comp, fpin);
   const a = (comp.rot * Math.PI) / 180,
     ca = Math.cos(a),
@@ -126,11 +141,11 @@ function padsOverlap(cA, fA, cB, fB, tol) {
   tol = tol || 0;
   if (fA.shape === "circle") {
     const c = pinWorldPos(cA, fA);
-    return pinEdgeDist(cB, fB, c.x, c.y) <= (fA.w * State.pxPerMm * (cA.scale || 1)) / 2 + tol;
+    return pinEdgeDist(cB, fB, c.x, c.y) <= (fA.w * State.pxPerMm) / 2 + tol;
   }
   if (fB.shape === "circle") {
     const c = pinWorldPos(cB, fB);
-    return pinEdgeDist(cA, fA, c.x, c.y) <= (fB.w * State.pxPerMm * (cB.scale || 1)) / 2 + tol;
+    return pinEdgeDist(cA, fA, c.x, c.y) <= (fB.w * State.pxPerMm) / 2 + tol;
   }
   return obbOverlap(pinOBB(cA, fA), pinOBB(cB, fB), tol);
 }
@@ -164,7 +179,7 @@ function padHitsSeg(comp, fpin, p0, p1, halfW, tol) {
   if (fpin.shape === "circle") {
     const c = pinWorldPos(comp, fpin);
     const pr = projectOnSeg(c.x, c.y, p0, p1);
-    return pr.d <= (fpin.w * State.pxPerMm * (comp.scale || 1)) / 2 + halfW + tol;
+    return pr.d <= (fpin.w * State.pxPerMm) / 2 + halfW + tol;
   }
   // Copper traces have round end caps, including zero-length segments.
   if (
@@ -177,7 +192,7 @@ function padHitsSeg(comp, fpin, p0, p1, halfW, tol) {
 }
 function compRadius(comp) {
   const fp = compFootprint(comp);
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   let r = (Math.hypot(fp.body.w, fp.body.h) / 2) * s;
   for (const p of fp.pins) r = Math.max(r, (Math.hypot(p.xmm, p.ymm) + Math.max(p.w, p.h)) * s);
   return r;
@@ -189,7 +204,7 @@ function compRadius(comp) {
    of way out at the diagonal radius. */
 function compBoxHalf(comp) {
   const fp = compFootprint(comp);
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   let hw = fp.body.w / 2,
     hh = fp.body.h / 2;
   for (const p of fp.pins) {
@@ -207,7 +222,7 @@ function compBoxHalf(comp) {
    not a bounding circle — so a wide connector is only clickable on its body. */
 function pointInComp(comp, wx, wy) {
   const fp = compFootprint(comp);
-  const s = State.pxPerMm * (comp.scale || 1);
+  const s = State.pxPerMm;
   // world → component-local mm
   let dx = wx - comp.x,
     dy = wy - comp.y;
@@ -221,7 +236,7 @@ function pointInComp(comp, wx, wy) {
     my = ly / s;
   const tol = 5 / View.zoom / s; // a few screen px, expressed in mm
   if (fp.body.shape === "circle") {
-    if (Math.hypot(mx, my) <= Math.max(fp.body.w, fp.body.h) / 2 + tol) return true;
+    if (Math.hypot(mx / (fp.body.w / 2 + tol), my / (fp.body.h / 2 + tol)) <= 1) return true;
   } else if (Math.abs(mx) <= fp.body.w / 2 + tol && Math.abs(my) <= fp.body.h / 2 + tol) {
     return true;
   }

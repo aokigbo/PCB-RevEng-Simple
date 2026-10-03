@@ -70,7 +70,7 @@ function nextRef(prefix) {
 function makeComponent(fpId, params, x, y, prefix) {
   const fp = generateFootprint(fpId, params);
   if (!fp) throw new Error("Unknown component package");
-  return {
+  return normalizeComponentGeometry({
     id: nextId(),
     ref: nextRef(prefix || refPrefixFor(fpId, "")),
     value: "",
@@ -79,11 +79,33 @@ function makeComponent(fpId, params, x, y, prefix) {
     x,
     y,
     rot: 0,
-    scale: 1,
     side: "front",
     body: { ...fp.body },
     pins: fp.pins.map((p) => ({ ...p, num: String(p.num) })),
-  };
+  });
+}
+// File-boundary migration: all editing/rendering uses physical millimetres.
+function normalizeComponentGeometry(c) {
+  const scale = c.scale === undefined ? 1 : c.scale;
+  // Older round bodies were drawn with their larger dimension as the diameter.
+  if (c.scale !== undefined && c.body.shape === "circle")
+    c.body.w = c.body.h = Math.max(c.body.w, c.body.h);
+  c.body.w *= scale;
+  c.body.h *= scale;
+  for (const p of c.pins) {
+    p.xmm *= scale;
+    p.ymm *= scale;
+    p.w *= scale;
+    p.h *= scale;
+    if (p.hole !== undefined) p.hole *= scale;
+    if (p.shape === "circle") {
+      p.h = p.w;
+      // Materialize the old drawing fallback so resizing never changes the drill.
+      if (p.tht !== false && !p.hole) p.hole = p.w * 0.4;
+    }
+  }
+  delete c.scale;
+  return c;
 }
 function documentPayload() {
   return {
@@ -173,7 +195,7 @@ function validateDocument(input) {
     xy(c);
     side(c);
     num(c.rot, "component rotation");
-    num(c.scale, "component scale", 0.001, 1000);
+    if (c.scale !== undefined) num(c.scale, "component scale", 0.001, 1000);
     str(c.ref, "reference");
     if (!c.ref.trim() || refs.has(c.ref.toUpperCase())) fail("empty or duplicate reference");
     refs.add(c.ref.toUpperCase());
@@ -181,8 +203,8 @@ function validateDocument(input) {
     str(c.footprint, "footprint");
     str(c.kicad, "KiCad footprint");
     if (!c.body) fail("component body");
-    num(c.body.w, "body width", 0.001, 10000);
-    num(c.body.h, "body height", 0.001, 10000);
+    num(c.body.w, "body width", 1e-6, 1e7);
+    num(c.body.h, "body height", 1e-6, 1e7);
     list(c.pins, "pads", 2000);
     const pins = new Set();
     for (const p of c.pins) {
@@ -190,15 +212,26 @@ function validateDocument(input) {
       if (!p.num.trim() || pins.has(p.num)) fail("empty or duplicate pin number");
       pins.add(p.num);
       str(p.name ?? "", "pin name");
-      num(p.xmm, "pad X");
-      num(p.ymm, "pad Y");
-      num(p.w, "pad width", 0.001, 10000);
-      num(p.h, "pad height", 0.001, 10000);
+      num(p.xmm, "pad X", -1e11, 1e11);
+      num(p.ymm, "pad Y", -1e11, 1e11);
+      num(p.w, "pad width", 1e-6, 1e7);
+      num(p.h, "pad height", 1e-6, 1e7);
       if (!["circle", "rect"].includes(p.shape)) fail("pad shape");
       if (p.tht !== undefined && typeof p.tht !== "boolean") fail("pad plating");
       if (p.shape === "rect" && p.tht === true) fail("through-hole pads must be round");
       if (p.hole !== undefined) num(p.hole, "pad hole", 0, Math.min(p.w, p.h));
       label(p);
+    }
+    normalizeComponentGeometry(c);
+    // Retain the full physical range of previously valid scaled projects.
+    num(c.body.w, "body width", 1e-6, 1e7);
+    num(c.body.h, "body height", 1e-6, 1e7);
+    for (const p of c.pins) {
+      num(p.xmm, "pad X", -1e11, 1e11);
+      num(p.ymm, "pad Y", -1e11, 1e11);
+      num(p.w, "pad width", 1e-6, 1e7);
+      num(p.h, "pad height", 1e-6, 1e7);
+      if (p.hole !== undefined) num(p.hole, "pad hole", 0, p.w);
     }
   }
   for (const t of d.traces) {

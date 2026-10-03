@@ -9,7 +9,7 @@ function conductors() {
     for (const p of c.pins) {
       const corners = padCornersWorld(c, p),
         wp = pinWorldPos(c, p),
-        r = (p.w * State.pxPerMm * c.scale) / 2;
+        r = (p.w * State.pxPerMm) / 2;
       const box =
         p.shape === "circle"
           ? { minX: wp.x - r, maxX: wp.x + r, minY: wp.y - r, maxY: wp.y + r }

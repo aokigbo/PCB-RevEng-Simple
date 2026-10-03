@@ -427,11 +427,19 @@ function selectionInspector(panel, s) {
     );
     numeric(
       panel,
-      "Package scale",
-      o.scale,
-      (v) => modifySelected((o) => (o.scale = v)),
+      "Body width (mm)",
+      o.body.w,
+      (v) => modifySelected((o) => (o.body.w = v)),
       0.01,
-      100,
+      10000,
+    );
+    numeric(
+      panel,
+      "Body height (mm)",
+      o.body.h,
+      (v) => modifySelected((o) => (o.body.h = v)),
+      0.01,
+      10000,
     );
     panel.append(el("h3", "Pads"));
     o.pins.forEach((p, index) => {
@@ -449,7 +457,10 @@ function selectionInspector(panel, s) {
       updateHint();
       notify("Click the board to place a new pad on " + o.ref);
     });
-    paragraph(panel, "Drag the body to move it. Click a pad to adjust its geometry.");
+    paragraph(
+      panel,
+      "Drag the body to move it. Drag a corner to resize the body. Select a pad to edit it separately.",
+    );
   } else if (s.type === "pad") {
     const p = o.pins[s.index];
     panel.append(el("h2", o.ref + " · Pad " + p.num));
@@ -515,13 +526,13 @@ function selectionInspector(panel, s) {
       numeric(
         panel,
         "Hole diameter (mm)",
-        p.hole || p.w * 0.4,
+        p.hole,
         (v) => modifySelected(() => (p.hole = v)),
         0.01,
         p.w,
       );
     netInspector(panel, pinKey(o, p));
-    paragraph(panel, "Drag the pad to match its position on the photograph.");
+    paragraph(panel, "Drag the pad to move it. Drag a corner to resize it.");
   } else if (s.type === "trace") {
     panel.append(el("h2", "Trace"));
     field(panel, "Layer", o.side, (v) => modifySelected((o) => (o.side = v)), {
@@ -745,7 +756,7 @@ function wireKeyboard() {
   document.addEventListener("keyup", (e) => {
     if (e.key === " ") {
       Editor.space = false;
-      View.canvas.style.cursor = Editor.tool === "select" ? "default" : "crosshair";
+      updateCursor();
     }
   });
   window.addEventListener("blur", () => {

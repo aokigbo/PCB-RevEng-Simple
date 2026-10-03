@@ -23,9 +23,17 @@ Two-point alignment cannot correct perspective: use perpendicular photos or scan
 ## Reconstruct the board
 
 Component offers a small package list. Click to place. Select the body to edit its
-reference, value, rotation, side or package scale. A custom body starts with no
-pads: select it, choose Add pad and click the board. Select a pad to set its number,
-name, width, height, local coordinates and type, or drag it to match the photo.
+reference, value, rotation, side, body width or body height. Drag the body to move
+it; drag one of its four corner squares to resize it around its fixed centre.
+Body resizing leaves all pads, traces and vias in place.
+
+A custom body starts with no pads: select it, choose Add pad and click the board.
+Select a pad to set its number, name, dimensions, local coordinates and type.
+Drag its interior to move it; drag a corner to resize its copper around the fixed
+pad centre. Round pads stay circular. Through-hole pads keep their drill unchanged
+and mouse resizing leaves at least 0.1 mm between outer and drill diameters
+(0.05 mm of copper per side). Numeric fields remain available for precision.
+Each drag is one undo step; Escape cancels it. Connectivity updates on release.
 Pads store real dimensions and numbering; the catalog is only a starting point.
 
 Trace draws on the side selected by Draw on. Click to start, click corners, and

@@ -34,7 +34,7 @@ function componentParams() {
 function componentPreview() {
   const pkg = PACKAGES[Editor.package],
     fp = generateFootprint(pkg.id, componentParams());
-  Editor.preview = {
+  Editor.preview = normalizeComponentGeometry({
     id: 0,
     ref: nextRef(pkg.prefix),
     value: "",
@@ -43,9 +43,8 @@ function componentPreview() {
     footprint: fp.label,
     kicad: fp.kicad,
     rot: 0,
-    scale: 1,
     side: View.drawSide,
-  };
+  });
   requestRender();
 }
 function setTool(tool) {
@@ -203,7 +202,21 @@ function cancelDrag() {
     Editor.selection = null;
   }
   Editor.drag = null;
+  if (d.pointerId !== undefined && View.canvas.hasPointerCapture(d.pointerId))
+    View.canvas.releasePointerCapture(d.pointerId);
+  updateCursor();
   afterEdit();
+}
+function updateCursor() {
+  View.canvas.style.cursor =
+    Editor.drag?.type === "pan"
+      ? "grabbing"
+      : Editor.space
+        ? "grab"
+        : Editor.drag?.type === "resize"
+          ? Editor.drag.cursor
+          : resizeHandleAt(Editor.cursor)?.cursor ||
+            (Editor.tool === "select" ? "default" : "crosshair");
 }
 function pointerDown(e) {
   if (e.button !== 0 && e.button !== 1) return;
@@ -214,7 +227,22 @@ function pointerDown(e) {
   View.canvas.setPointerCapture(e.pointerId);
   e.preventDefault();
   if (e.button === 1 || Editor.space) {
-    Editor.drag = { type: "pan", start: pos, x: View.panX, y: View.panY };
+    Editor.drag = { type: "pan", start: pos, x: View.panX, y: View.panY, pointerId: e.pointerId };
+    updateCursor();
+    return;
+  }
+  const handle = resizeHandleAt(p);
+  if (handle) {
+    Editor.drag = {
+      type: "resize",
+      selection: Editor.selection,
+      before: snapshot(),
+      start: p,
+      offset: { x: handle.corner.x - p.x, y: handle.corner.y - p.y },
+      cursor: handle.cursor,
+      pointerId: e.pointerId,
+    };
+    updateCursor();
     return;
   }
   if (Editor.mode) {
@@ -299,6 +327,7 @@ function pointerDown(e) {
     selection: hit,
     anchors: anchorsFor(hit),
     moved: false,
+    pointerId: e.pointerId,
   };
 }
 function pointerMove(e) {
@@ -311,6 +340,18 @@ function pointerMove(e) {
   if (d?.type === "pan") {
     View.panX = d.x + pos.x - d.start.x;
     View.panY = d.y + pos.y - d.start.y;
+    requestRender();
+    return;
+  }
+  if (d?.type === "resize") {
+    if (!d.moved && Math.hypot(p.x - d.start.x, p.y - d.start.y) * View.zoom < 3) return;
+    d.moved = true;
+    const s = d.selection,
+      pad = s.type === "pad" ? s.object.pins[s.index] : null;
+    Object.assign(
+      pad || s.object.body,
+      resizeDimensions(s.object, { x: p.x + d.offset.x, y: p.y + d.offset.y }, pad),
+    );
     requestRender();
     return;
   }
@@ -343,6 +384,7 @@ function pointerMove(e) {
     return;
   }
   Editor.snap = ["trace", "via"].includes(Editor.tool) ? snapPoint(p, Editor.tool === "via") : null;
+  updateCursor();
   requestRender();
 }
 function pointerUp(e) {
@@ -353,12 +395,14 @@ function pointerUp(e) {
     remember(d.before);
     afterEdit();
   }
+  updateCursor();
 }
 function insertTraceVertex(e) {
   if (Editor.tool !== "select" || Editor.mode) return;
   const p0 = canvasPos(e),
     p = screenToWorld(p0.x, p0.y),
     hit = hitTest(p);
+  if (resizeHandleAt(p)) return;
   if (hit?.type !== "trace") return;
   const t = hit.object;
   let best = null;

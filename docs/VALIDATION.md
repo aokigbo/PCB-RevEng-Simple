@@ -1,10 +1,10 @@
 # Validation record
 
-Validated locally on 2026-10-03 against upstream revision `f820cc3`.
+Validated locally on 2026-10-03, including direct resizing, based on source snapshot `ba7fe73`.
 
 ## Result
 
-- `npm test`: all 24 unit cases pass across geometry, connectivity, documents,
+- `npm test`: all 31 unit cases pass across geometry, connectivity, documents,
   alignment, export structure and file handling.
 - `npm run test:browser`: passes in headless desktop Chrome with no page errors.
 - `npm run format:check`: passes; `git diff --check`: passes.
@@ -23,8 +23,18 @@ The six persistence unit cases cover repeat Save without another picker, write
 failure, picker cancellation, concurrent edits during a write, external file
 modification and invalid Open preserving the current document and handle.
 
-## Size reduction
+The direct-resizing browser workflow verifies fixed component/pad centres, all four
+rotated/back-side body corners, untouched copper during body resizing, pad contact
+changes on release, one history entry per drag, undo/redo and Escape cancellation.
+It exercises circular SMD/plated pads, a fixed drill and minimum copper margin,
+Space/middle-button panning over handles, interior component/pad movement, trace
+vertex editing, zoomed handles and save/reopen of the final geometry. Screenshots
+of selected body and pad handles were inspected. Unit coverage also checks old
+scale migration, equivalent world geometry and idempotent normalization.
 
+## Initial size reduction
+
+The following records the initial simplification, before direct resizing was added.
 Measure only runtime JS, HTML and CSS actually loaded by the entry page; exclude
 both old large sample/library assets and new development dependencies/tests/docs.
 

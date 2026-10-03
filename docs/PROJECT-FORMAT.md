@@ -36,15 +36,26 @@ in JSON because of base64 encoding, but remain portable and backed up with the f
 ## Components and pads
 
 A component has `id`, `ref`, `value`, `footprint` (display name), `kicad` (optional
-library-qualified footprint string), `x`, `y`, `rot`, `scale`, `side`, `body`
+library-qualified footprint string), `x`, `y`, `rot`, `side`, `body`
 (`w`, `h`, optional `shape`) and `pins`.
 
 Each pin has unique string `num`, optional `name`, `xmm`, `ymm` (component-local mm),
 `w`, `h` (mm), and `shape` (`rect` or `circle`). A circle with `tht` other than
 false is a plated through-hole pad; `tht:false` is a one-sided round SMD land.
-Rectangles are SMD pads. Optional `hole` is the drill **diameter** in mm. New round
-pads use equal width/height. Package scale applies to body, pad positions and sizes.
+Rectangles are SMD pads. `hole` is the drill **diameter** in mm for plated pads.
+Round pads always use equal width/height. Body and pad dimensions are physical mm;
+there is no component-scale transform. Body resizing does not change pad geometry.
+A round body uses its width/height as the two diameters of its outline.
 The app stores explicit pad geometry: future catalog changes cannot move saved pads.
+Resize handles, selections and active drags are UI state and are never serialized.
+
+Existing v1 files with `component.scale` remain supported. On load, the multiplier
+is baked into body dimensions, pad offsets, pad dimensions and any drill diameter,
+then removed. Round pads normalize height to their visible width. Older round
+bodies preserve their visible diameter (the larger dimension). A missing or zero
+plated-pad drill is materialized from the old display default, 40% of outer width,
+so later copper resizing cannot resize the drill. Normalization happens once at
+load; saved projects use explicit geometry without a format-version change.
 
 ## Traces and vias
 

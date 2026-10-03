@@ -179,3 +179,58 @@ test("KiCad export contains exactly the reconstructed component pins, with escap
     '"a,b","x""y","a\rb"',
   );
 });
+
+test("loading old package scales bakes dimensions once without moving copper", () => {
+  const run = core();
+  run(`State.components=[makeComponent('pad1',{tht:true,dia:1.5,hole:0.6},80,40)];
+    const c=State.components[0]; c.scale=2; c.rot=37; c.side='back';
+    c.body={w:5,h:3}; Object.assign(c.pins[0],{xmm:2,ymm:1});
+    const old=structuredClone(c), raw=documentPayload();
+    State=validateDocument(raw); const converted=State.components[0];`);
+  assert.equal(run("converted.body.w"), 10);
+  assert.equal(run("converted.body.h"), 6);
+  assert.equal(run("converted.pins[0].xmm"), 4);
+  assert.equal(run("converted.pins[0].ymm"), 2);
+  assert.equal(run("converted.pins[0].w"), 3);
+  assert.equal(run("converted.pins[0].h"), 3);
+  assert.equal(run("converted.pins[0].hole"), 1.2);
+  assert.equal(run("'scale' in converted"), false);
+  assert.equal(run("raw.components[0].scale"), 2); // caller's input stays intact
+  assert.ok(
+    run(`(() => {
+    const angle=37*Math.PI/180, x=-2*2*10, y=1*2*10;
+    const expected={x:80+x*Math.cos(angle)-y*Math.sin(angle),y:40+x*Math.sin(angle)+y*Math.cos(angle)};
+    const actual=pinWorldPos(converted,converted.pins[0]);
+    return Math.hypot(actual.x-expected.x,actual.y-expected.y)<1e-9
+      && Math.abs(pinOBB(converted,converted.pins[0]).hw-15)<1e-9;
+  })()`),
+  );
+  assert.equal(run("JSON.stringify(validateDocument(documentPayload()))"), run("snapshot()"));
+  assert.throws(() => run("raw.components[0].scale=0;validateDocument(raw)"), /component scale/);
+});
+test("legacy plated pads acquire a fixed physical drill before any resize", () => {
+  const run = core();
+  run(`const legacy={app:'pcb-reveng',version:1,components:[{id:1,ref:'J1',fpId:'sip',fpParams:{pins:2},x:0,y:0,side:'front',scale:2,pins:[{num:1},{num:2}]}]};
+    State=validateDocument(migrateLegacy(legacy)); const pad=State.components[0].pins[0];`);
+  assert.ok(run("Math.abs(pad.hole-pad.w*0.4)<1e-9"));
+  const hole = run("pad.hole");
+  run("pad.w=pad.h=pad.w*2");
+  assert.equal(run("pad.hole"), hole);
+  assert.equal(run("'scale' in makeComponent('chip2',{},0,0)"), false);
+});
+test("body resizing leaves nets intact; pad resizing makes and breaks copper contact", () => {
+  const run = core();
+  run(setup);
+  run(`State.components=[makeComponent('free',{pinList:[{num:1,x:0,y:0,w:1,h:1,shape:'rect',tht:false}]},0,0)];
+    State.traces=[t(2,'front',[p(12,-15),p(12,15)],2)];rebuildConnectivity();`);
+  assert.equal(run("Connectivity.nets.length"), 2);
+  run("State.components[0].body.w=50;rebuildConnectivity()");
+  assert.equal(run("Connectivity.nets.length"), 2);
+  run(`editDocument(()=>Object.assign(State.components[0].pins[0],
+    resizeDimensions(State.components[0],p(12,10),State.components[0].pins[0])));rebuildConnectivity()`);
+  assert.equal(run("Connectivity.nets.length"), 1);
+  run("undo();rebuildConnectivity()");
+  assert.equal(run("Connectivity.nets.length"), 2);
+  run("redo();rebuildConnectivity()");
+  assert.equal(run("Connectivity.nets.length"), 1);
+});
