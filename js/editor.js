@@ -102,35 +102,67 @@ function change(fn) {
     return false;
   }
 }
+function selectionItems(selection = Editor.selection) {
+  return !selection ? [] : selection.type === "group" ? selection.items : [selection];
+}
+function isGroupSelection() {
+  return Editor.selection?.type === "group";
+}
+function selectionContains(type, object, index) {
+  return selectionItems().some(
+    (s) => s.type === type && s.object === object && (type !== "pad" || s.index === index),
+  );
+}
+function canonicalSelection(items) {
+  const parents = new Set(items.filter((s) => s.type === "component").map((s) => s.object));
+  const seen = new Set();
+  items = items.filter((s) => {
+    if (s.type === "pad" && parents.has(s.object)) return false;
+    const key = s.type + ":" + s.object.id + ":" + (s.index ?? "");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return items.length > 1 ? { type: "group", items } : items[0] || null;
+}
+function marqueeSelection(a, b) {
+  const items = [],
+    box = bounds([a, b]);
+  if (View.components)
+    for (const c of State.components) {
+      if (sideVisible(c.side) && cornersContained(box, bodyCornersWorld(c)))
+        items.push({ type: "component", object: c });
+      else
+        c.pins.forEach((p, index) => {
+          if (padVisible(c, p) && cornersContained(box, padCornersWorld(c, p)))
+            items.push({ type: "pad", object: c, index });
+        });
+    }
+  return canonicalSelection(items);
+}
 function anchorsFor(selection) {
   const locations = [];
-  const o = selection.object;
-  if (selection.type === "component")
-    o.pins.forEach((p) =>
+  for (const s of selectionItems(selection)) {
+    const o = s.object;
+    const pads = s.type === "component" ? o.pins : s.type === "pad" ? [o.pins[s.index]] : [];
+    for (const p of pads)
       locations.push({
         before: pinWorldPos(o, p),
         after: () => pinWorldPos(o, p),
         side: through(p) ? null : o.side,
-      }),
-    );
-  if (selection.type === "pad") {
-    const p = o.pins[selection.index];
-    locations.push({
-      before: pinWorldPos(o, p),
-      after: () => pinWorldPos(o, p),
-      side: through(p) ? null : o.side,
-    });
+      });
+    if (s.type === "via") locations.push({ before: { x: o.x, y: o.y }, after: () => o });
   }
-  if (selection.type === "via") locations.push({ before: { x: o.x, y: o.y }, after: () => o });
   const anchors = [];
   for (const t of State.traces)
-    for (const point of t.points)
-      for (const loc of locations)
-        if (
+    for (const point of t.points) {
+      const loc = locations.find(
+        (loc) =>
           (!loc.side || loc.side === t.side) &&
-          Math.hypot(point.x - loc.before.x, point.y - loc.before.y) < 1e-5
-        )
-          anchors.push({ point, after: loc.after });
+          Math.hypot(point.x - loc.before.x, point.y - loc.before.y) < 1e-5,
+      );
+      if (loc) anchors.push({ point, after: loc.after });
+    }
   return anchors;
 }
 function applyAnchors(anchors) {
@@ -166,19 +198,90 @@ function finishTrace() {
   requestRender();
 }
 function deleteSelected() {
-  const s = Editor.selection;
-  if (!s) return;
+  if (Editor.drag) return;
+  const items = selectionItems(canonicalSelection(selectionItems()));
+  if (!items.length) return;
+  // Higher pad indices are removed first so remaining selections stay valid.
+  items.sort((a, b) => (b.index ?? -1) - (a.index ?? -1));
   change(() => {
-    if (s.type === "pad") s.object.pins.splice(s.index, 1);
-    else if (s.type === "trace" && s.vertex !== undefined && s.object.points.length > 2)
-      s.object.points.splice(s.vertex, 1);
-    else {
-      const key = { component: "components", trace: "traces", via: "vias", image: "layers" }[
-        s.type
-      ];
-      State[key] = State[key].filter((o) => o.id !== s.object.id);
+    for (const s of items) {
+      if (s.type === "pad") s.object.pins.splice(s.index, 1);
+      else if (s.type === "trace" && s.vertex !== undefined && s.object.points.length > 2)
+        s.object.points.splice(s.vertex, 1);
+      else {
+        const key = { component: "components", trace: "traces", via: "vias", image: "layers" }[
+          s.type
+        ];
+        State[key] = State[key].filter((o) => o.id !== s.object.id);
+      }
     }
     Editor.selection = null;
+  });
+}
+function copySelected() {
+  if (Editor.drag) return;
+  const items = selectionItems(canonicalSelection(selectionItems())).filter(
+    (s) => s.type === "component" || s.type === "pad",
+  );
+  if (!items.length) return;
+  const cleanPad = (p) => {
+    const copy = structuredClone(p);
+    delete copy.netName;
+    delete copy.netId;
+    return copy;
+  };
+  const entries = items.map((s) => {
+    const c = s.object;
+    if (s.type === "pad")
+      return {
+        type: "pad",
+        parentId: c.id,
+        data: cleanPad(c.pins[s.index]),
+        position: pinWorldPos(c, c.pins[s.index]),
+      };
+    const data = structuredClone(c);
+    delete data.id;
+    delete data.netName;
+    delete data.netId;
+    data.pins = c.pins.map(cleanPad);
+    return {
+      type: "component",
+      data,
+      position: { x: c.x, y: c.y },
+      prefix: c.ref.replace(/\d+$/, "") || "U",
+    };
+  });
+  const box = bounds(entries.map((entry) => entry.position));
+  Editor.clipboard = {
+    entries,
+    origin: { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 },
+  };
+}
+function pasteClipboard() {
+  if (Editor.drag || !Editor.clipboard) return;
+  const { entries, origin } = Editor.clipboard;
+  const dx = Editor.cursor.x - origin.x,
+    dy = Editor.cursor.y - origin.y;
+  setTool("select");
+  change(() => {
+    const items = [];
+    for (const entry of entries) {
+      const data = structuredClone(entry.data);
+      const point = { x: entry.position.x + dx, y: entry.position.y + dy };
+      if (entry.type === "component") {
+        Object.assign(data, point, { id: nextId(), ref: nextRef(entry.prefix) });
+        State.components.push(data);
+        items.push({ type: "component", object: data });
+      } else {
+        const c = State.components.find((c) => c.id === entry.parentId);
+        if (!c) continue;
+        const q = compWorldToMm(c, point.x, point.y);
+        Object.assign(data, { num: nextPinNumber(c), xmm: q.x, ymm: q.y });
+        c.pins.push(data);
+        items.push({ type: "pad", object: c, index: c.pins.length - 1 });
+      }
+    }
+    Editor.selection = canonicalSelection(items);
   });
 }
 function runHistory(redoIt) {
@@ -233,9 +336,18 @@ function pointerDown(e) {
   }
   const handle = resizeHandleAt(p);
   if (handle) {
+    const s = Editor.selection,
+      o = s.object;
+    const pad = s.type === "pad" ? o.pins[s.index] : null;
+    const opposite = selectionResizeCorners()[(handle.cornerIndex + 2) % 4];
     Editor.drag = {
       type: "resize",
-      selection: Editor.selection,
+      selection: s,
+      cornerIndex: handle.cornerIndex,
+      anchorLocal: compWorldToMm(o, opposite.x, opposite.y),
+      original: structuredClone(pad || o.body),
+      minimum: pad && through(pad) ? Math.max(0.01, pad.hole + 0.1) : 0.01,
+      anchors: pad ? anchorsFor(s) : [],
       before: snapshot(),
       start: p,
       offset: { x: handle.corner.x - p.x, y: handle.corner.y - p.y },
@@ -252,11 +364,10 @@ function pointerDown(e) {
   if (Editor.padTarget) {
     const c = Editor.padTarget,
       q = compWorldToMm(c, p.x, p.y);
-    let n = 1;
-    while (c.pins.some((p) => p.num === String(n))) n++;
+    const num = nextPinNumber(c);
     change(() => {
       c.pins.push({
-        num: String(n),
+        num,
         name: "",
         xmm: q.x,
         ymm: q.y,
@@ -315,17 +426,33 @@ function pointerDown(e) {
   }
   if (Editor.tool === "measure") return;
   const hit = hitTest(p);
-  Editor.selection = hit;
+  if (!hit) {
+    Editor.selection = null;
+    Editor.drag = { type: "marquee", start: p, end: p, pointerId: e.pointerId };
+    renderInspector();
+    requestRender();
+    return;
+  }
+  if (
+    !isGroupSelection() ||
+    !(
+      selectionContains(hit.type, hit.object, hit.index) ||
+      (hit.type === "pad" && selectionContains("component", hit.object))
+    )
+  )
+    Editor.selection = hit;
   renderInspector();
   requestRender();
-  if (!hit) return;
   Editor.drag = {
     type: "object",
     start: p,
     before: snapshot(),
-    original: structuredClone(hit.object),
-    selection: hit,
-    anchors: anchorsFor(hit),
+    records: selectionItems().map((s) => ({
+      selection: s,
+      original: structuredClone(s.object),
+      padPosition: s.type === "pad" ? pinWorldPos(s.object, s.object.pins[s.index]) : null,
+    })),
+    anchors: anchorsFor(Editor.selection),
     moved: false,
     pointerId: e.pointerId,
   };
@@ -350,8 +477,23 @@ function pointerMove(e) {
       pad = s.type === "pad" ? s.object.pins[s.index] : null;
     Object.assign(
       pad || s.object.body,
-      resizeDimensions(s.object, { x: p.x + d.offset.x, y: p.y + d.offset.y }, pad),
+      resizeGeometry(
+        s.object,
+        { x: p.x + d.offset.x, y: p.y + d.offset.y },
+        d.anchorLocal,
+        d.original,
+        d.cornerIndex,
+        e.shiftKey,
+        d.minimum,
+      ),
     );
+    applyAnchors(d.anchors);
+    requestRender();
+    return;
+  }
+  if (d?.type === "marquee") {
+    d.end = p;
+    if (Math.hypot(p.x - d.start.x, p.y - d.start.y) * View.zoom >= 3) d.moved = true;
     requestRender();
     return;
   }
@@ -360,16 +502,27 @@ function pointerMove(e) {
       dy = p.y - d.start.y;
     if (!d.moved && Math.hypot(dx, dy) * View.zoom < 3) return;
     d.moved = true;
-    const s = d.selection,
+    moveSelectionRecords(d.records, dx, dy, p);
+    applyAnchors(d.anchors);
+    requestRender();
+    return;
+  }
+  Editor.snap = ["trace", "via"].includes(Editor.tool) ? snapPoint(p, Editor.tool === "via") : null;
+  updateCursor();
+  requestRender();
+}
+function moveSelectionRecords(records, dx, dy, pointer) {
+  for (const record of records) {
+    const s = record.selection,
       o = s.object,
-      orig = d.original;
+      orig = record.original;
     if (s.type === "pad") {
-      const q = compWorldToMm(o, p.x, p.y);
+      const q = compWorldToMm(o, record.padPosition.x + dx, record.padPosition.y + dy);
       o.pins[s.index].xmm = q.x;
       o.pins[s.index].ymm = q.y;
     } else if (s.type === "trace") {
       if (s.vertex !== undefined) {
-        const q = snapPoint(p, false, o) || p;
+        const q = snapPoint(pointer, false, o) || pointer;
         o.points[s.vertex] = { x: q.x, y: q.y };
       } else o.points = orig.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
     } else if (s.type === "image") {
@@ -379,18 +532,17 @@ function pointerMove(e) {
       o.x = orig.x + dx;
       o.y = orig.y + dy;
     }
-    applyAnchors(d.anchors);
-    requestRender();
-    return;
   }
-  Editor.snap = ["trace", "via"].includes(Editor.tool) ? snapPoint(p, Editor.tool === "via") : null;
-  updateCursor();
-  requestRender();
 }
 function pointerUp(e) {
   const d = Editor.drag;
   Editor.drag = null;
   if (View.canvas.hasPointerCapture(e.pointerId)) View.canvas.releasePointerCapture(e.pointerId);
+  if (d?.type === "marquee") {
+    Editor.selection = d.moved ? marqueeSelection(d.start, d.end) : null;
+    renderInspector();
+    requestRender();
+  }
   if (d?.before) {
     remember(d.before);
     afterEdit();
@@ -457,7 +609,7 @@ function recordMeasurePoint(p) {
 }
 function updateHint() {
   let text = {
-    select: "Select an object to inspect it · Scroll to zoom · Space + drag to pan",
+    select: "Drag empty space to select · Ctrl/Cmd+C copy · Ctrl/Cmd+V paste · Space + drag to pan",
     component: "Choose a package, then click to place · Escape returns to Select",
     trace: "Click pads or copper to trace · Click to add corners · Enter finishes · Escape cancels",
     via: "Click to place a via connecting front and back copper",

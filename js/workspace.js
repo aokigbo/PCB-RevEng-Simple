@@ -429,7 +429,11 @@ function selectionInspector(panel, s) {
       panel,
       "Body width (mm)",
       o.body.w,
-      (v) => modifySelected((o) => (o.body.w = v)),
+      (v) =>
+        modifySelected((o) => {
+          o.body.w = v;
+          if (o.body.shape === "circle") o.body.h = v;
+        }),
       0.01,
       10000,
     );
@@ -437,7 +441,11 @@ function selectionInspector(panel, s) {
       panel,
       "Body height (mm)",
       o.body.h,
-      (v) => modifySelected((o) => (o.body.h = v)),
+      (v) =>
+        modifySelected((o) => {
+          o.body.h = v;
+          if (o.body.shape === "circle") o.body.w = v;
+        }),
       0.01,
       10000,
     );
@@ -459,7 +467,7 @@ function selectionInspector(panel, s) {
     });
     paragraph(
       panel,
-      "Drag the body to move it. Drag a corner to resize the body. Select a pad to edit it separately.",
+      "Drag the body to move it. Drag a corner to resize; the opposite corner stays fixed. Hold Shift to preserve its ratio. Select a pad to edit it separately.",
     );
   } else if (s.type === "pad") {
     const p = o.pins[s.index];
@@ -532,7 +540,10 @@ function selectionInspector(panel, s) {
         p.w,
       );
     netInspector(panel, pinKey(o, p));
-    paragraph(panel, "Drag the pad to move it. Drag a corner to resize it.");
+    paragraph(
+      panel,
+      "Drag the pad to move it. Drag a corner to resize; the opposite corner stays fixed. Hold Shift to preserve its ratio.",
+    );
   } else if (s.type === "trace") {
     panel.append(el("h2", "Trace"));
     field(panel, "Layer", o.side, (v) => modifySelected((o) => (o.side = v)), {
@@ -590,7 +601,14 @@ function selectionInspector(panel, s) {
 function renderInspector() {
   const panel = $("inspector");
   panel.replaceChildren();
-  if (Editor.selection) selectionInspector(panel, Editor.selection);
+  if (isGroupSelection()) {
+    const items = selectionItems();
+    panel.append(el("h2", items.length + " items selected"));
+    for (const type of ["component", "pad"]) {
+      const n = items.filter((s) => s.type === type).length;
+      if (n) paragraph(panel, n + " " + type + (n === 1 ? "" : "s"));
+    }
+  } else if (Editor.selection) selectionInspector(panel, Editor.selection);
   else if (Editor.tool === "component") componentToolInspector(panel);
   else if (Editor.tool === "measure") measureInspector(panel);
   else if (Editor.tool === "trace") {
@@ -698,6 +716,7 @@ async function importPhoto(file, side) {
 function resetWorkspace() {
   documentEpoch++;
   Editor.fieldDirty = false;
+  Editor.clipboard = null;
   Editor.drag = null;
   Editor.trace = [];
   Editor.mode = null;
@@ -729,6 +748,12 @@ function wireKeyboard() {
       return;
     }
     if (input) return;
+    if (cmd && (key === "c" || key === "v")) {
+      e.preventDefault();
+      if (key === "c") copySelected();
+      else pasteClipboard();
+      return;
+    }
     if (cmd && (key === "z" || key === "y")) {
       e.preventDefault();
       runHistory(key === "y" || e.shiftKey);

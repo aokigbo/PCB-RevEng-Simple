@@ -32,6 +32,7 @@ const Editor = {
   params: {},
   preview: null,
   fieldDirty: false,
+  clipboard: null,
 };
 function worldToScreen(x, y) {
   return { x: x * View.zoom + View.panX, y: y * View.zoom + View.panY };
@@ -47,7 +48,7 @@ function padVisible(c, p) {
 }
 function selectedKey() {
   const s = Editor.selection;
-  if (!s) return null;
+  if (!s || s.type === "group") return null;
   return s.type === "pad"
     ? pinKey(s.object, s.object.pins[s.index])
     : s.type === "trace"
@@ -133,8 +134,12 @@ function pathTrace(ctx, points) {
   ctx.beginPath();
   points.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
 }
+function pinDisplayLabel(pin) {
+  return pin.name?.trim() ? pin.name.trim() + " | " + pin.num : pin.num;
+}
 function renderComponent(ctx, c, ghost = false) {
-  const selected = Editor.selection?.object === c;
+  const selected = selectionContains("component", c);
+  const active = !isGroupSelection() && Editor.selection?.object === c;
   const scale = State.pxPerMm;
   ctx.save();
   ctx.translate(c.x, c.y);
@@ -145,14 +150,21 @@ function renderComponent(ctx, c, ghost = false) {
     ctx.fillStyle = selected ? "#42635640" : "#1b283940";
     ctx.lineWidth = 1.2 / View.zoom / scale;
     ctx.beginPath();
-    if (c.body.shape === "circle") ctx.ellipse(0, 0, c.body.w / 2, c.body.h / 2, 0, 0, Math.PI * 2);
-    else ctx.rect(-c.body.w / 2, -c.body.h / 2, c.body.w, c.body.h);
+    if (c.body.shape === "circle")
+      ctx.ellipse(c.body.xmm || 0, c.body.ymm || 0, c.body.w / 2, c.body.h / 2, 0, 0, Math.PI * 2);
+    else
+      ctx.rect(
+        (c.body.xmm || 0) - c.body.w / 2,
+        (c.body.ymm || 0) - c.body.h / 2,
+        c.body.w,
+        c.body.h,
+      );
     ctx.fill();
     ctx.stroke();
   }
   c.pins.forEach((p, i) => {
     if (!padVisible(c, p) && !ghost) return;
-    const chosen = selected && Editor.selection.type === "pad" && Editor.selection.index === i;
+    const chosen = selectionContains("pad", c, i) || selected;
     ctx.fillStyle = ghost ? "#87dabe99" : netColor(pinKey(c, p), c.side);
     ctx.strokeStyle = chosen ? "#e1fff5" : "#27333d";
     ctx.lineWidth = (chosen ? 2 : 0.7) / View.zoom / scale;
@@ -175,14 +187,16 @@ function renderComponent(ctx, c, ghost = false) {
     ctx.textAlign = "center";
     ctx.fillStyle = selected ? "#d9ffef" : "#deebf3";
     ctx.fillText(c.ref, c.x, c.y - box.hy - 8 / View.zoom);
-    if (selected)
-      for (const p of c.pins) {
-        const q = pinWorldPos(c, p);
-        ctx.font = 10 / View.zoom + "px system-ui";
-        ctx.fillStyle = "#fff";
-        ctx.fillText(p.num, q.x, q.y - (p.h * scale) / 2 - 4 / View.zoom);
-      }
   }
+  if (active)
+    for (const p of c.pins) {
+      if (!padVisible(c, p)) continue;
+      const q = pinWorldPos(c, p);
+      ctx.font = 10 / View.zoom + "px system-ui";
+      ctx.textAlign = "center";
+      ctx.fillStyle = "#fff";
+      ctx.fillText(pinDisplayLabel(p), q.x, q.y - (p.h * scale) / 2 - 4 / View.zoom);
+    }
 }
 function renderCanvas() {
   if (!View.ctx) return;
@@ -258,6 +272,14 @@ function renderCanvas() {
         ctx.stroke();
       }
     }
+  if (Editor.drag?.type === "marquee" && Editor.drag.moved) {
+    const box = bounds([Editor.drag.start, Editor.drag.end]);
+    ctx.fillStyle = "#baf5df10";
+    ctx.strokeStyle = "#baf5df";
+    ctx.lineWidth = 1 / View.zoom;
+    ctx.fillRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
+    ctx.strokeRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
+  }
   const corners = selectionResizeCorners();
   if (corners.length) {
     ctx.strokeStyle = "#baf5df";
@@ -340,18 +362,21 @@ function resizeHandleAt(p) {
   if (!corners.length) return null;
   const center = { x: (corners[0].x + corners[2].x) / 2, y: (corners[0].y + corners[2].y) / 2 };
   let nearest = null,
+    cornerIndex = -1,
     distance = 7 / View.zoom;
-  for (const corner of corners) {
+  for (const [index, corner] of corners.entries()) {
     const d = Math.hypot(p.x - corner.x, p.y - corner.y);
     if (d < distance) {
       distance = d;
       nearest = corner;
+      cornerIndex = index;
     }
   }
   // Keep the centre available for moving pads whose handles overlap at low zoom.
   if (!nearest || Math.hypot(p.x - center.x, p.y - center.y) < distance) return null;
   return {
     corner: nearest,
+    cornerIndex,
     cursor: (nearest.x - center.x) * (nearest.y - center.y) >= 0 ? "nwse-resize" : "nesw-resize",
   };
 }

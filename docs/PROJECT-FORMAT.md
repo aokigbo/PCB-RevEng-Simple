@@ -37,7 +37,11 @@ in JSON because of base64 encoding, but remain portable and backed up with the f
 
 A component has `id`, `ref`, `value`, `footprint` (display name), `kicad` (optional
 library-qualified footprint string), `x`, `y`, `rot`, `side`, `body`
-(`w`, `h`, optional `shape`) and `pins`.
+(`w`, `h`, `xmm`, `ymm`, optional `shape`) and `pins`.
+Body `xmm`/`ymm` are its local centre in mm, independent of the component's pad
+origin. Older files default these offsets to zero. They let corner resizing keep
+the opposite body corner fixed without moving the component origin or its pads.
+Body offsets are internal geometry, not separate inspector controls.
 
 Each pin has unique string `num`, optional `name`, `xmm`, `ymm` (component-local mm),
 `w`, `h` (mm), and `shape` (`rect` or `circle`). A circle with `tht` other than
@@ -45,12 +49,14 @@ false is a plated through-hole pad; `tht:false` is a one-sided round SMD land.
 Rectangles are SMD pads. `hole` is the drill **diameter** in mm for plated pads.
 Round pads always use equal width/height. Body and pad dimensions are physical mm;
 there is no component-scale transform. Body resizing does not change pad geometry.
-A round body uses its width/height as the two diameters of its outline.
+Round bodies preserve a 1:1 ratio during corner resizing.
 The app stores explicit pad geometry: future catalog changes cannot move saved pads.
-Resize handles, selections and active drags are UI state and are never serialized.
+Resize handles, selections, the internal clipboard and active drags are UI state
+and are never serialized. Copied components get new IDs and references; copied pads
+get new numbers on their existing parent. Paste never carries `netName` or traces.
 
 Existing v1 files with `component.scale` remain supported. On load, the multiplier
-is baked into body dimensions, pad offsets, pad dimensions and any drill diameter,
+is baked into body dimensions/offsets, pad offsets, pad dimensions and any drill diameter,
 then removed. Round pads normalize height to their visible width. Older round
 bodies preserve their visible diameter (the larger dimension). A missing or zero
 plated-pad drill is materialized from the old display default, 40% of outer width,

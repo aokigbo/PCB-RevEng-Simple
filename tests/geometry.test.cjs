@@ -67,52 +67,107 @@ test("body and pad corners follow rotation and back-side mirroring", () => {
     assert.ok(Math.abs(padCorners[0].y - (side === "front" ? 70 : 30)) < 1e-9);
   }
 });
-test("body resizing uses local physical dimensions at every rotation and side", () => {
+test("anchored resizing keeps the opposite corner fixed for rotated and mirrored bodies", () => {
   const g = geometry();
   for (const side of ["front", "back"])
     for (const rot of [0, 37, 90, 180]) {
-      const c = { x: 25, y: -30, rot, side };
-      for (const [x, y] of [
-        [-4, -3],
-        [4, -3],
-        [4, 3],
-        [-4, 3],
-      ]) {
-        const size = g.resizeDimensions(c, g.compMmToWorld(c, x, y));
-        assert.ok(Math.abs(size.w - 8) < 1e-9);
-        assert.ok(Math.abs(size.h - 6) < 1e-9);
+      const c = { x: 25, y: -30, rot, side, body: { w: 4, h: 2, xmm: 3, ymm: -1 }, pins: [] };
+      const old = g.bodyCornersWorld(c);
+      for (let i = 0; i < 4; i++) {
+        const anchor = g.compWorldToMm(c, old[(i + 2) % 4].x, old[(i + 2) % 4].y);
+        const target = {
+          x: anchor.x + ([0, 3].includes(i) ? -8 : 8),
+          y: anchor.y + (i < 2 ? -6 : 6),
+        };
+        const resized = g.resizeGeometry(
+          c,
+          g.compMmToWorld(c, target.x, target.y),
+          anchor,
+          c.body,
+          i,
+        );
+        const corners = g.bodyCornersWorld({ ...c, body: resized });
+        assert.ok(
+          Math.hypot(
+            corners[(i + 2) % 4].x - old[(i + 2) % 4].x,
+            corners[(i + 2) % 4].y - old[(i + 2) % 4].y,
+          ) < 1e-9,
+        );
+        assert.ok(Math.abs(resized.w - 8) < 1e-9);
+        assert.ok(Math.abs(resized.h - 6) < 1e-9);
       }
+      assert.ok(g.compRadius(c) >= Math.hypot(50, -20));
+      assert.ok(g.compBoxHalf(c).hx > 0);
     }
 });
-test("rectangular pads resize around their own local centre", () => {
-  const g = geometry();
-  const c = { x: 40, y: -20, rot: 37, side: "back" };
-  const pad = { xmm: -3, ymm: 2, w: 1, h: 1, shape: "rect" };
-  const before = JSON.stringify(pad);
-  const size = g.resizeDimensions(c, g.compMmToWorld(c, -5, 5), pad);
-  assert.ok(Math.abs(size.w - 4) < 1e-9);
-  assert.ok(Math.abs(size.h - 6) < 1e-9);
-  assert.equal(JSON.stringify(pad), before);
-  const minimum = g.resizeDimensions(c, g.pinWorldPos(c, pad), pad);
-  assert.equal(minimum.w, 0.01);
-  assert.equal(minimum.h, 0.01);
+test("rectangular pad resize moves its centre while leaving its opposite corner anchored", () => {
+  const g = geometry(),
+    c = { x: 40, y: -20, rot: 37, side: "back" };
+  const pad = { xmm: -3, ymm: 2, w: 2, h: 1, shape: "rect" },
+    anchor = { x: -4, y: 1.5 };
+  const size = g.resizeGeometry(c, g.compMmToWorld(c, 2, 4), anchor, pad, 2);
+  assert.ok(Math.abs(size.w - 6) < 1e-9);
+  assert.ok(Math.abs(size.h - 2.5) < 1e-9);
+  assert.ok(Math.abs(size.xmm + 1) < 1e-9);
+  assert.ok(Math.abs(size.ymm - 2.75) < 1e-9);
 });
-test("round pads stay circular at every corner and keep copper beyond the drill", () => {
-  const g = geometry();
-  const c = { x: 0, y: 0, rot: 90, side: "back" };
-  const pad = { xmm: 2, ymm: 1, w: 1.5, h: 1.5, shape: "circle", tht: true, hole: 0.8 };
-  for (const [dx, dy] of [
-    [-2, -1],
-    [2, -1],
-    [2, 1],
-    [-2, 1],
+test("Shift preserves the original ratio using the larger relative grow or shrink change", () => {
+  const g = geometry(),
+    c = { x: 0, y: 0, rot: 0, side: "front" },
+    original = { w: 4, h: 2 },
+    anchor = { x: 0, y: 0 };
+  for (const [x, y, w, h] of [
+    [8, 3, 8, 4],
+    [3, 4, 8, 4],
+    [2, 1.8, 2, 1],
+    [3.5, 0.5, 1, 0.5],
   ]) {
-    const size = g.resizeDimensions(c, g.compMmToWorld(c, 2 + dx, 1 + dy), pad);
-    assert.equal(size.w, size.h);
-    assert.ok(Math.abs(size.w - 4) < 1e-9);
+    const size = g.resizeGeometry(c, { x: x * 10, y: y * 10 }, anchor, original, 2, true);
+    assert.equal(size.w, w);
+    assert.equal(size.h, h);
+    assert.equal(size.w / size.h, 2);
+    assert.equal(size.xmm - size.w / 2, 0);
+    assert.equal(size.ymm - size.h / 2, 0);
   }
-  const size = g.resizeDimensions(c, g.pinWorldPos(c, pad), pad);
-  assert.equal(size.w, 0.9);
-  assert.equal(size.h, 0.9);
-  assert.equal(pad.hole, 0.8);
+  const free = g.resizeGeometry(c, { x: 80, y: 30 }, anchor, original, 2);
+  assert.notEqual(free.w / free.h, 2);
+});
+test("circular pads and bodies keep a square anchored box and the drill stays fixed", () => {
+  const g = geometry(),
+    c = { x: 0, y: 0, rot: 90, side: "back" };
+  const original = { w: 1.5, h: 1.5, shape: "circle", hole: 0.8 },
+    anchor = { x: 2, y: 1 };
+  for (const shift of [false, true])
+    for (let i = 0; i < 4; i++) {
+      const dx = [0, 3].includes(i) ? -4 : 4,
+        dy = i < 2 ? -2 : 2;
+      const size = g.resizeGeometry(
+        c,
+        g.compMmToWorld(c, 2 + dx, 1 + dy),
+        anchor,
+        original,
+        i,
+        shift,
+        0.9,
+      );
+      assert.equal(size.w, size.h);
+      assert.ok(Math.abs(size.w - 4) < 1e-9);
+      assert.ok(Math.abs(size.xmm - (Math.sign(dx) * size.w) / 2 - anchor.x) < 1e-9);
+      assert.ok(Math.abs(size.ymm - (Math.sign(dy) * size.h) / 2 - anchor.y) < 1e-9);
+    }
+  const size = g.resizeGeometry(c, g.compMmToWorld(c, 2, 1), anchor, original, 0, false, 0.9);
+  assert.ok(Math.abs(size.w - 0.9) < 1e-9);
+  assert.equal(original.hole, 0.8);
+});
+test("body offsets affect hit testing and bounds without changing pads", () => {
+  const g = geometry(),
+    c = { x: 0, y: 0, rot: 0, side: "front", body: { w: 4, h: 2, xmm: 10, ymm: 5 }, pins: [] };
+  assert.equal(g.pointInComp(c, 100, 50), true);
+  assert.equal(g.pointInComp(c, 0, 0), false);
+  assert.equal(g.compBoxHalf(c).hx, 120);
+  assert.equal(g.compBoxHalf(c).hy, 60);
+  const corner = g.bodyCornersWorld(c)[2];
+  assert.equal(corner.x, 120);
+  assert.equal(corner.y, 60);
+  assert.ok(g.compRadius(c) >= Math.hypot(120, 60));
 });

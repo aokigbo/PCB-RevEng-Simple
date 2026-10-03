@@ -230,6 +230,7 @@ const path = require("node:path");
     await clickWorld(0, 50);
     await page.screenshot({ path: path.join(out, "workspace.png") });
     await require("./browser-resize.cjs")({ page, out, clickWorld, setField });
+    await require("./browser-selection.cjs")({ page, out, clickWorld });
     assert.deepEqual(errors, []);
     console.log(
       "PASS: photo import, calibration, alignment, placement, trace/via connectivity, custom pads, naming, undo/redo, save/reopen, KiCad netlist, no browser errors.",

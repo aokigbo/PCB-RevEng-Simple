@@ -29,9 +29,11 @@ opening `index.html` directly.
    on import; their properties let you change this if the scan is already mirrored.
 4. Place components. Use **Select** to edit references, values, rotation, package
    body dimensions and individual pad geometry. Drag a selected body's or pad's
-   corner to resize it around its centre. Body resizing leaves copper unchanged;
-   round pads stay circular and keep their drill size. Custom components support
-   manually placed pads.
+   corner to resize with the opposite corner fixed; hold Shift to preserve ratio.
+   Body resizing leaves copper unchanged; round pads keep their drill size.
+   Drag empty space to select multiple components/pads, then move, delete or
+   copy/paste them with Ctrl+C / Ctrl+V (Command on macOS). Custom components
+   support manually placed pads.
 5. Draw traces. Click to add corners, click a conductor or press Enter to finish.
    Place vias to connect the front and back. Inspect and name nets in Properties.
 6. **Save As** chooses a `.pcbrev` file. **Save / Ctrl+S** updates that same file.

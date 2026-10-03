@@ -56,19 +56,46 @@ function padCornersWorld(comp, fpin) {
   ];
 }
 
+function cornersContained(box, corners) {
+  return corners.every(
+    (p) => p.x >= box.minX && p.x <= box.maxX && p.y >= box.minY && p.y <= box.maxY,
+  );
+}
 function bodyCornersWorld(comp) {
-  return padCornersWorld(comp, { ...comp.body, xmm: 0, ymm: 0 });
+  return padCornersWorld(comp, { ...comp.body, xmm: comp.body.xmm || 0, ymm: comp.body.ymm || 0 });
 }
 
-// The pointer is in world pixels; only dimensions change, never either centre.
-function resizeDimensions(comp, point, pad = null) {
+// Anchor and original dimensions are captured once when the corner drag starts.
+function resizeGeometry(
+  comp,
+  point,
+  anchor,
+  original,
+  cornerIndex,
+  keepAspect = false,
+  minimum = 0.01,
+) {
   const q = compWorldToMm(comp, point.x, point.y);
-  const minimum =
-    pad?.shape === "circle" && pad.tht !== false ? Math.max(0.01, pad.hole + 0.1) : 0.01;
-  const clamp = (v) => Math.max(minimum, Math.min(10000, v));
-  const w = clamp(2 * Math.abs(q.x - (pad?.xmm || 0)));
-  const h = clamp(2 * Math.abs(q.y - (pad?.ymm || 0)));
-  return pad?.shape === "circle" ? { w: Math.max(w, h), h: Math.max(w, h) } : { w, h };
+  const dx = q.x - anchor.x,
+    dy = q.y - anchor.y;
+  const sx = Math.sign(dx) || ([0, 3].includes(cornerIndex) ? -1 : 1);
+  const sy = Math.sign(dy) || (cornerIndex < 2 ? -1 : 1);
+  let w = Math.abs(dx),
+    h = Math.abs(dy);
+  if (original.shape === "circle" || keepAspect) {
+    const ow = original.w,
+      oh = original.shape === "circle" ? original.w : original.h;
+    // The greater relative change drives both dimensions, for growing or shrinking.
+    let factor = Math.abs(w / ow - 1) >= Math.abs(h / oh - 1) ? w / ow : h / oh;
+    factor = Math.max(Math.max(minimum / ow, minimum / oh), factor);
+    factor = Math.min(factor, 1e7 / Math.max(ow, oh));
+    w = ow * factor;
+    h = oh * factor;
+  } else {
+    w = Math.max(minimum, Math.min(1e7, w));
+    h = Math.max(minimum, Math.min(1e7, h));
+  }
+  return { w, h, xmm: anchor.x + (sx * w) / 2, ymm: anchor.y + (sy * h) / 2 };
 }
 
 /* distance in world pixels from a world point to a pad's ACTUAL edge (0 when the
@@ -193,7 +220,8 @@ function padHitsSeg(comp, fpin, p0, p1, halfW, tol) {
 function compRadius(comp) {
   const fp = compFootprint(comp);
   const s = State.pxPerMm;
-  let r = (Math.hypot(fp.body.w, fp.body.h) / 2) * s;
+  let r =
+    (Math.hypot(fp.body.xmm || 0, fp.body.ymm || 0) + Math.hypot(fp.body.w, fp.body.h) / 2) * s;
   for (const p of fp.pins) r = Math.max(r, (Math.hypot(p.xmm, p.ymm) + Math.max(p.w, p.h)) * s);
   return r;
 }
@@ -205,8 +233,8 @@ function compRadius(comp) {
 function compBoxHalf(comp) {
   const fp = compFootprint(comp);
   const s = State.pxPerMm;
-  let hw = fp.body.w / 2,
-    hh = fp.body.h / 2;
+  let hw = Math.abs(fp.body.xmm || 0) + fp.body.w / 2,
+    hh = Math.abs(fp.body.ymm || 0) + fp.body.h / 2;
   for (const p of fp.pins) {
     hw = Math.max(hw, Math.abs(p.xmm) + p.w / 2);
     hh = Math.max(hh, Math.abs(p.ymm) + p.h / 2);
@@ -235,9 +263,11 @@ function pointInComp(comp, wx, wy) {
   const mx = lx / s,
     my = ly / s;
   const tol = 5 / View.zoom / s; // a few screen px, expressed in mm
+  const bx = mx - (fp.body.xmm || 0),
+    by = my - (fp.body.ymm || 0);
   if (fp.body.shape === "circle") {
-    if (Math.hypot(mx / (fp.body.w / 2 + tol), my / (fp.body.h / 2 + tol)) <= 1) return true;
-  } else if (Math.abs(mx) <= fp.body.w / 2 + tol && Math.abs(my) <= fp.body.h / 2 + tol) {
+    if (Math.hypot(bx / (fp.body.w / 2 + tol), by / (fp.body.h / 2 + tol)) <= 1) return true;
+  } else if (Math.abs(bx) <= fp.body.w / 2 + tol && Math.abs(by) <= fp.body.h / 2 + tol) {
     return true;
   }
   for (const p of fp.pins)

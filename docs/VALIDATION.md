@@ -1,10 +1,10 @@
 # Validation record
 
-Validated locally on 2026-10-03, including direct resizing, based on source snapshot `ba7fe73`.
+Validated locally on 2026-10-03, including selection, copy/paste and anchored resizing, based on `1872b6d`.
 
 ## Result
 
-- `npm test`: all 31 unit cases pass across geometry, connectivity, documents,
+- `npm test`: all 40 unit cases pass across geometry, connectivity, documents,
   alignment, export structure and file handling.
 - `npm run test:browser`: passes in headless desktop Chrome with no page errors.
 - `npm run format:check`: passes; `git diff --check`: passes.
@@ -23,7 +23,7 @@ The six persistence unit cases cover repeat Save without another picker, write
 failure, picker cancellation, concurrent edits during a write, external file
 modification and invalid Open preserving the current document and handle.
 
-The direct-resizing browser workflow verifies fixed component/pad centres, all four
+The direct-resizing browser workflow verifies fixed opposite corners, all four
 rotated/back-side body corners, untouched copper during body resizing, pad contact
 changes on release, one history entry per drag, undo/redo and Escape cancellation.
 It exercises circular SMD/plated pads, a fixed drill and minimum copper margin,
@@ -31,6 +31,17 @@ Space/middle-button panning over handles, interior component/pad movement, trace
 vertex editing, zoomed handles and save/reopen of the final geometry. Screenshots
 of selected body and pad handles were inspected. Unit coverage also checks old
 scale migration, equivalent world geometry and idempotent normalization.
+
+The selection browser workflow opens a three-component fixture through the normal
+Open command and verifies full-containment marquees, pads inside bodies, parent
+canonicalization, mixed group movement and deletion, and exactly one undo entry
+per edit. Attached endpoints follow moved pads while intermediate bends stay put.
+It verifies Ctrl/Cmd copy and paste, fresh identities/references/pin numbers, no
+copied net assignments or traces, relative spacing and same-parent pad paste.
+Free and Shift-constrained body/pad resizing keep their opposite corners anchored;
+body offsets and trace attachments survive save/reopen. Pin labels and their absence
+on group selections are checked as canvas text, with formatting covered separately
+by a unit test. New/Open clears the internal clipboard. KiCad export still succeeds.
 
 ## Initial size reduction
 

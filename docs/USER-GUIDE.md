@@ -24,17 +24,38 @@ Two-point alignment cannot correct perspective: use perpendicular photos or scan
 
 Component offers a small package list. Click to place. Select the body to edit its
 reference, value, rotation, side, body width or body height. Drag the body to move
-it; drag one of its four corner squares to resize it around its fixed centre.
-Body resizing leaves all pads, traces and vias in place.
+it; drag one of its four corner squares to resize it with the opposite corner
+fixed. Hold Shift to preserve the original width:height ratio. Body resizing leaves
+all pads, traces and vias in place.
 
 A custom body starts with no pads: select it, choose Add pad and click the board.
 Select a pad to set its number, name, dimensions, local coordinates and type.
-Drag its interior to move it; drag a corner to resize its copper around the fixed
-pad centre. Round pads stay circular. Through-hole pads keep their drill unchanged
+Drag its interior to move it; drag a corner to resize its copper with the opposite
+corner fixed. The pad centre moves and any trace vertices attached there follow
+it, while other trace bends stay fixed. Hold Shift to preserve a rectangle's ratio.
+Round pads and bodies stay circular during corner resizing. Through-hole pads keep their drill unchanged
 and mouse resizing leaves at least 0.1 mm between outer and drill diameters
 (0.05 mm of copper per side). Numeric fields remain available for precision.
 Each drag is one undo step; Escape cancels it. Connectivity updates on release.
 Pads store real dimensions and numbering; the catalog is only a starting point.
+
+A single selected component or pad shows pin labels as **Name | Number**, or just
+the number when no name is set. Group selections hide pin labels to avoid clutter.
+
+Drag from empty canvas space to select components and pads inside a rectangle.
+Only fully enclosed objects are selected. Enclosing a whole component body selects
+it once, including its pads. Enclosing only pads selects those pads individually.
+Traces, vias and photos keep their direct-click selection behavior. Drag any selected
+item to move the group; only trace points attached to moved pad centres follow.
+Other bends stay fixed, even when both ends of a trace move. Delete removes the
+selected objects together, with one Undo to restore them. Groups have no resize handles.
+
+Use **Ctrl+C / Ctrl+V** (Command on macOS) to copy components and individual pads.
+Paste places the selection's centre at the current mouse position and keeps its
+relative spacing. Components get new IDs and references; individual pads stay in
+their original component and get new pin numbers. Names, dimensions and values are
+retained; electrical net names and attached traces are not copied. The clipboard
+is internal to this app and clears on New/Open. Each paste is one undo step.
 
 Trace draws on the side selected by Draw on. Click to start, click corners, and
 click a conductor or press Enter to finish. A pale circle marks a snap target.
@@ -76,9 +97,12 @@ as a routed KiCad board.
 | Save / Save As                             | Ctrl+S / Ctrl+Shift+S             |
 | Undo / Redo                                | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y   |
 | Select / Component / Trace / Via / Measure | V / C / T / B / M                 |
-| Delete selected object or trace corner     | Delete                            |
+| Delete selected objects or trace corner    | Delete                            |
 | Finish trace                               | Enter                             |
 | Cancel / return to Select                  | Escape                            |
+| Copy / Paste components or pads            | Ctrl+C / Ctrl+V                   |
+| Select multiple components/pads            | Drag from empty canvas            |
+| Preserve ratio during corner resize        | Shift + drag                      |
 | Fit board                                  | F                                 |
 | Zoom                                       | Mouse wheel                       |
 | Pan                                        | Middle mouse drag or Space + drag |

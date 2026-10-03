@@ -227,7 +227,7 @@ test("body resizing leaves nets intact; pad resizing makes and breaks copper con
   run("State.components[0].body.w=50;rebuildConnectivity()");
   assert.equal(run("Connectivity.nets.length"), 2);
   run(`editDocument(()=>Object.assign(State.components[0].pins[0],
-    resizeDimensions(State.components[0],p(12,10),State.components[0].pins[0])));rebuildConnectivity()`);
+    resizeGeometry(State.components[0],p(12,10),{x:-0.5,y:-0.5},State.components[0].pins[0],2)));rebuildConnectivity()`);
   assert.equal(run("Connectivity.nets.length"), 1);
   run("undo();rebuildConnectivity()");
   assert.equal(run("Connectivity.nets.length"), 2);

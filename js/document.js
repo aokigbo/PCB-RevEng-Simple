@@ -64,8 +64,13 @@ function pruneImageAssets() {
 }
 function nextRef(prefix) {
   let i = 1;
-  while (State.components.some((c) => c.ref === prefix + i)) i++;
+  while (State.components.some((c) => c.ref.toUpperCase() === (prefix + i).toUpperCase())) i++;
   return prefix + i;
+}
+function nextPinNumber(component) {
+  let i = 1;
+  while (component.pins.some((p) => p.num === String(i))) i++;
+  return String(i);
 }
 function makeComponent(fpId, params, x, y, prefix) {
   const fp = generateFootprint(fpId, params);
@@ -92,6 +97,8 @@ function normalizeComponentGeometry(c) {
     c.body.w = c.body.h = Math.max(c.body.w, c.body.h);
   c.body.w *= scale;
   c.body.h *= scale;
+  c.body.xmm = (c.body.xmm ?? 0) * scale;
+  c.body.ymm = (c.body.ymm ?? 0) * scale;
   for (const p of c.pins) {
     p.xmm *= scale;
     p.ymm *= scale;
@@ -205,6 +212,8 @@ function validateDocument(input) {
     if (!c.body) fail("component body");
     num(c.body.w, "body width", 1e-6, 1e7);
     num(c.body.h, "body height", 1e-6, 1e7);
+    for (const axis of ["xmm", "ymm"])
+      if (c.body[axis] !== undefined) num(c.body[axis], "body offset", -1e11, 1e11);
     list(c.pins, "pads", 2000);
     const pins = new Set();
     for (const p of c.pins) {
@@ -226,6 +235,8 @@ function validateDocument(input) {
     // Retain the full physical range of previously valid scaled projects.
     num(c.body.w, "body width", 1e-6, 1e7);
     num(c.body.h, "body height", 1e-6, 1e7);
+    num(c.body.xmm, "body offset", -1e11, 1e11);
+    num(c.body.ymm, "body offset", -1e11, 1e11);
     for (const p of c.pins) {
       num(p.xmm, "pad X", -1e11, 1e11);
       num(p.ymm, "pad Y", -1e11, 1e11);

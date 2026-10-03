@@ -32,7 +32,12 @@ module.exports = async ({ page, out, clickWorld, setField }) => {
   async function selectBody(index = 0) {
     await page.locator("[data-tool=select]").click();
     const p = await page.evaluate(
-      (i) => compMmToWorld(State.components[i], 0, State.components[i].body.h * 0.45),
+      (i) =>
+        compMmToWorld(
+          State.components[i],
+          State.components[i].body.xmm || 0,
+          (State.components[i].body.ymm || 0) + State.components[i].body.h * 0.45,
+        ),
       index,
     );
     await clickWorld(p.x, p.y);
@@ -64,10 +69,10 @@ module.exports = async ({ page, out, clickWorld, setField }) => {
   const hp = await screen(handle);
   await page.mouse.move(hp.x, hp.y);
   assert.equal(await page.locator("#canvas").evaluate((el) => el.style.cursor), "nwse-resize");
-  await drag(handle, { x: -80, y: -40 }); // local (7,4) → 14×8 mm
+  await drag(handle, { x: -80, y: -40 }); // anchored NW (-5,-2.5), dragged SE (7,4) → 12×6.5 mm
   const resized = await state();
-  near(resized.components[0].body.w, 14);
-  near(resized.components[0].body.h, 8);
+  near(resized.components[0].body.w, 12);
+  near(resized.components[0].body.h, 6.5);
   assert.deepEqual(resized.components[0].pins, before.components[0].pins);
   assert.equal(resized.components[0].x, before.components[0].x);
   assert.equal(resized.components[0].y, before.components[0].y);
@@ -117,10 +122,10 @@ module.exports = async ({ page, out, clickWorld, setField }) => {
   const padAfter = await state();
   const p0 = padBefore.components[0].pins[1],
     p1 = padAfter.components[0].pins[1];
-  near(p1.w, 6);
-  near(p1.h, 4);
-  assert.equal(p1.xmm, p0.xmm);
-  assert.equal(p1.ymm, p0.ymm);
+  near(p1.w, 3.75);
+  near(p1.h, 2.75);
+  near(p1.xmm, p0.xmm + 1.125);
+  near(p1.ymm, p0.ymm + 0.625);
   assert.deepEqual(padAfter.traces, padBefore.traces);
   assert.deepEqual(padAfter.components[0].body, padBefore.components[0].body);
   assert.equal(padAfter.past, padBefore.past + 1);
@@ -154,10 +159,14 @@ module.exports = async ({ page, out, clickWorld, setField }) => {
       ([x, y]) => compMmToWorld(State.components[0], x, y),
       [x, y],
     );
-    await drag((await corners())[i], target);
-    const after = await state();
-    near(after.components[0].body.w, 2 * Math.abs(x));
-    near(after.components[0].body.h, 2 * Math.abs(y));
+    const oldCorners = await corners();
+    await drag(oldCorners[i], target);
+    const after = await state(),
+      newCorners = await corners();
+    near(newCorners[(i + 2) % 4].x, oldCorners[(i + 2) % 4].x);
+    near(newCorners[(i + 2) % 4].y, oldCorners[(i + 2) % 4].y);
+    near(newCorners[i].x, target.x);
+    near(newCorners[i].y, target.y);
     assert.deepEqual(after.components[0].pins, old.components[0].pins);
     assert.deepEqual(after.traces, old.traces);
   }
@@ -183,14 +192,18 @@ module.exports = async ({ page, out, clickWorld, setField }) => {
   assert.equal(movedPad.h, oldPad.h);
   await page.getByLabel("Pad type", { exact: true }).selectOption("tht");
   await setField("Hole diameter (mm)", 0.8);
-  const centre = await padCenter();
-  await drag((await corners())[0], centre);
+  const opposite = (await corners())[2];
+  await drag((await corners())[0], opposite);
   const round = (await state()).components[0].pins[1];
   near(round.w, 0.9);
   assert.equal(round.w, round.h);
   assert.equal(round.hole, 0.8);
   await page.getByLabel("Pad type", { exact: true }).selectOption("circle");
-  const bigger = await page.evaluate(() => compMmToWorld(State.components[0], 10, 4));
+  const bigger = await page.evaluate(() => {
+    const c = State.components[0],
+      p = c.pins[1];
+    return compMmToWorld(c, p.xmm - p.w / 2 + 4, p.ymm - p.h / 2 + 2);
+  });
   await drag((await corners())[2], bigger);
   const smd = (await state()).components[0].pins[1];
   near(smd.w, 4);
@@ -251,6 +264,6 @@ module.exports = async ({ page, out, clickWorld, setField }) => {
   await page.getByRole("button", { name: "Pad 2", exact: true }).click();
   await page.screenshot({ path: path.join(out, "resized-pad.png") });
   console.log(
-    "PASS: centred body/pad resizing, all rotated/back corners, fixed drills, undo/redo/cancel, panning, movement, connectivity and save/reopen.",
+    "PASS: anchored body/pad resizing, all rotated/back corners, fixed drills, undo/redo/cancel, panning, movement, connectivity and save/reopen.",
   );
 };
