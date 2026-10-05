@@ -118,7 +118,7 @@ function netInspector(panel, key) {
   paragraph(
     panel,
     net.conflict
-      ? "Resolve this net’s names before exporting."
+      ? "Review these conflicting names in the AI package."
       : net.members.length + " connected copper object" + (net.members.length === 1 ? "" : "s"),
   );
   field(panel, "Net name", net.names.length === 1 ? net.names[0] : "", (name) =>
@@ -408,9 +408,6 @@ function selectionInspector(panel, s) {
     );
     field(panel, "Value", o.value, (v) => modifySelected((o) => (o.value = v)));
     paragraph(panel, o.footprint, "pill");
-    field(panel, "KiCad footprint (optional)", o.kicad, (v) =>
-      modifySelected((o) => (o.kicad = v)),
-    ).placeholder = "Library:Footprint";
     field(panel, "Side", o.side, (v) => modifySelected((o) => (o.side = v)), {
       choices: [
         ["front", "Front"],
@@ -449,6 +446,22 @@ function selectionInspector(panel, s) {
       0.01,
       10000,
     );
+    panel.append(el("h3", "Datasheet"));
+    const datasheet = State.attachments.find((a) => a.id === o.datasheetId);
+    if (datasheet) {
+      const size =
+        datasheet.size >= 1048576
+          ? (datasheet.size / 1048576).toFixed(1) + " MB"
+          : datasheet.size >= 1024
+            ? (datasheet.size / 1024).toFixed(1) + " KB"
+            : datasheet.size + " bytes";
+      paragraph(panel, datasheet.name + " · " + size);
+      const actions = el("div", undefined, "row");
+      panel.append(actions);
+      button(actions, "Open", () => openDatasheet(o));
+      button(actions, "Replace", () => chooseDatasheet(o));
+      button(actions, "Remove", () => removeDatasheet(o));
+    } else button(panel, "Attach PDF", () => chooseDatasheet(o));
     panel.append(el("h3", "Pads"));
     o.pins.forEach((p, index) => {
       const row = el("div", undefined, "pad-row");
@@ -858,7 +871,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("photo-input").onchange = (e) => {
     if (e.target.files[0]) importPhoto(e.target.files[0], importSide);
   };
-  for (const kind of ["net", "bom"])
+  for (const kind of ["bom", "ai"])
     $("export-" + kind).onclick = () => {
       if (Editor.trace.length >= 2) finishTrace();
       exportFile(kind);

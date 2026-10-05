@@ -53,8 +53,8 @@ selected objects together, with one Undo to restore them. Groups have no resize 
 Use **Ctrl+C / Ctrl+V** (Command on macOS) to copy components and individual pads.
 Paste places the selection's centre at the current mouse position and keeps its
 relative spacing. Components get new IDs and references; individual pads stay in
-their original component and get new pin numbers. Names, dimensions and values are
-retained; electrical net names and attached traces are not copied. The clipboard
+their original component and get new pin numbers. Names, dimensions, values and
+datasheet references are retained; electrical net names and attached traces are not copied. The clipboard
 is internal to this app and clears on New/Open. Each paste is one undo step.
 
 Trace draws on the side selected by Draw on. Click to start, click corners, and
@@ -72,7 +72,15 @@ Moving other geometry can disconnect it, so inspect the highlighted net afterwar
 
 Orange warnings mean names conflict on touching copper or an imported name is
 repeated on disconnected copper. Select and rename the affected group, correct
-its geometry, or Undo. The netlist export remains blocked until warnings are resolved.
+its geometry, or Undo. AI export includes these warnings without blocking the download.
+
+## Datasheets
+
+Select a component and use **Attach PDF** in Properties. The PDF is embedded in
+the `.pcbrev` file when you save. Components using identical PDF bytes share one
+copy. **Open** uses a new browser tab and its normal PDF viewer. **Replace** links
+a different PDF; **Remove** clears that component's link. Undo restores replaced
+or removed datasheets. There is no separate attachment panel.
 
 ## Save and export
 
@@ -82,12 +90,12 @@ If an external editor changes the file, ordinary Save refuses to overwrite it:
 Save As preserves your version separately, or reopen to load the disk version.
 New and Open ask before discarding unsaved edits; a browser close warns too.
 
-Export → KiCad netlist produces a `.net` file with component references, values,
-optional KiCad footprint identifiers and pad connectivity. Import it into KiCad's
-PCB Editor using the netlist import command available in your KiCad version.
-Assign or verify footprint identifiers there. Export → BOM writes a CSV component
-list. Neither export creates a finished schematic or transfers photographed copper
-as a routed KiCad board.
+Export → BOM CSV writes references, values, package names and sides. Export → AI
+package writes `<project name>-AI.zip` with `graph.json`, `context.md` and any
+referenced PDFs. The graph lists components, pins and electrical nets, including
+user names and connectivity warnings. It is generated from the current board each
+time. The package excludes board photographs and physical geometry, so keep the
+`.pcbrev` file as the full project source.
 
 ## Shortcuts
 

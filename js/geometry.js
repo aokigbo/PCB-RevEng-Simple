@@ -15,7 +15,7 @@ function pinWorldPos(comp, pin) {
 }
 
 function compFootprint(comp) {
-  return { pins: comp.pins, body: comp.body, label: comp.footprint, kicad: comp.kicad };
+  return { pins: comp.pins, body: comp.body, label: comp.footprint };
 }
 
 /* footprint-local mm ⇄ world px (same rotate/mirror convention as pinWorldPos) — used by

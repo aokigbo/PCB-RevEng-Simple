@@ -253,12 +253,18 @@ module.exports = async ({ page, out, clickWorld, setField }) => {
   assert.equal(reopened.nets, saved.nets);
   await page.locator("#export-menu summary").click();
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "KiCad netlist (.net)" }).click();
-  await (await download).saveAs(path.join(out, "Resized.net"));
-  const netlist = await fs.readFile(path.join(out, "Resized.net"), "utf8");
-  assert.equal((netlist.match(/\(node /g) || []).length, 4);
-  assert.match(netlist, /\(ref U1\)/);
-  assert.match(netlist, /\(ref U2\)/);
+  await page.getByRole("button", { name: "AI package" }).click();
+  await (await download).saveAs(path.join(out, "Resized-AI.zip"));
+  const zip = require("../vendor/fflate-0.8.3.js").unzipSync(
+    new Uint8Array(await fs.readFile(path.join(out, "Resized-AI.zip"))),
+  );
+  const graph = JSON.parse(require("../vendor/fflate-0.8.3.js").strFromU8(zip["graph.json"]));
+  assert.equal(
+    graph.components.reduce((n, c) => n + c.pins.length, 0),
+    4,
+  );
+  assert.ok(graph.components.some((c) => c.reference === "U1"));
+  assert.ok(graph.components.some((c) => c.reference === "U2"));
   await page.locator("[data-view=both]").click();
   await selectBody();
   await page.getByRole("button", { name: "Pad 2", exact: true }).click();

@@ -41,7 +41,6 @@ function componentPreview() {
     body: fp.body,
     pins: fp.pins,
     footprint: fp.label,
-    kicad: fp.kicad,
     rot: 0,
     side: View.drawSide,
   });
@@ -387,8 +386,6 @@ function pointerDown(e) {
     change(() => {
       const c = makeComponent(pkg.id, componentParams(), p.x, p.y, pkg.prefix);
       c.side = View.drawSide;
-      if (Editor.package === "capacitor")
-        c.kicad = c.kicad.replace("Resistor_SMD:R_", "Capacitor_SMD:C_");
       State.components.push(c);
     });
     componentPreview();

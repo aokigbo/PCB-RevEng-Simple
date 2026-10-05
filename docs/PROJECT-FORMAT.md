@@ -13,7 +13,8 @@ A UTF-8, indented JSON file with extension `.pcbrev`:
   "layers": [],
   "components": [],
   "traces": [],
-  "vias": []
+  "vias": [],
+  "attachments": []
 }
 ```
 
@@ -35,8 +36,8 @@ in JSON because of base64 encoding, but remain portable and backed up with the f
 
 ## Components and pads
 
-A component has `id`, `ref`, `value`, `footprint` (display name), `kicad` (optional
-library-qualified footprint string), `x`, `y`, `rot`, `side`, `body`
+A component has `id`, `ref`, `value`, `footprint` (display name), optional
+`datasheetId`, `x`, `y`, `rot`, `side`, `body`
 (`w`, `h`, `xmm`, `ymm`, optional `shape`) and `pins`.
 Body `xmm`/`ymm` are its local centre in mm, independent of the component's pad
 origin. Older files default these offsets to zero. They let corner resizing keep
@@ -53,7 +54,7 @@ Round bodies preserve a 1:1 ratio during corner resizing.
 The app stores explicit pad geometry: future catalog changes cannot move saved pads.
 Resize handles, selections, the internal clipboard and active drags are UI state
 and are never serialized. Copied components get new IDs and references; copied pads
-get new numbers on their existing parent. Paste never carries `netName` or traces.
+get new numbers on their existing parent. Paste never carries `netName` or traces; copied components keep their datasheet ID.
 
 Existing v1 files with `component.scale` remain supported. On load, the multiplier
 is baked into body dimensions/offsets, pad offsets, pad dimensions and any drill diameter,
@@ -62,6 +63,21 @@ bodies preserve their visible diameter (the larger dimension). A missing or zero
 plated-pad drill is materialized from the old display default, 40% of outer width,
 so later copper resizing cannot resize the drill. Normalization happens once at
 load; saved projects use explicit geometry without a format-version change.
+
+## Datasheets
+
+`attachments` is a project-level array of PDF records with `id`, `name`,
+`mime: "application/pdf"`, `size` in bytes, lowercase SHA-256 `sha256`, and an
+embedded `data:application/pdf;base64,...` URL. Components refer to these records
+through `datasheetId`; several components may share one record. The app checks PDF
+signature, size and checksum before opening a project. Loading older v1 files
+without `attachments` treats the collection as empty. An obsolete component
+`kicad` value is silently discarded on load; the package description remains in
+`footprint`. Saving keeps version 1 and does not write `kicad`.
+
+In memory, `State.attachments` contains only metadata. PDF bytes live in a separate
+asset map and remain available while the current project or undo/redo history
+references them. Saving embeds them in the single JSON `.pcbrev` file.
 
 ## Traces and vias
 
@@ -88,15 +104,19 @@ are deterministic and cannot collide with explicitly assigned names.
 ## Loading and saving
 
 Unsupported versions, invalid dimensions, duplicate references/IDs/pin numbers,
-invalid layer counts and undecodable photos reject the entire open operation.
+invalid layer counts, undecodable photos and invalid PDFs reject the entire open operation.
 The current document remains intact. File handles and Saved checkpoints change
 only on a successful Open or completed Save. Existing-file Save checks modification
 time and size before writing; it cannot eliminate a race with an external writer
 changing the file between that check and the final close.
 
 A successful Open starts a fresh in-memory undo history. Save does not save view
-state or undo history. Images referenced by current or historical states remain
-in memory; unreachable images are released when history advances.
+state or undo history. Photos and PDFs referenced by current or historical states
+remain in memory; unreachable assets are released when history advances.
+
+`graph.json` and `context.md` are derived only when exporting an AI package. They
+are never stored in `.pcbrev`. The export contains a net-centric electrical graph,
+warnings and referenced PDFs; it excludes photos and physical coordinates.
 
 ## Legacy conversion
 

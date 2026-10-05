@@ -1,6 +1,6 @@
 "use strict";
 
-// Only document data lives in State. Images and history are session-only.
+// Only document metadata lives in State. Binary assets and history are session-only.
 function emptyDocument() {
   return {
     name: "Untitled board",
@@ -11,10 +11,12 @@ function emptyDocument() {
     components: [],
     traces: [],
     vias: [],
+    attachments: [],
   };
 }
 let State = emptyDocument();
 const ImageAssets = new Map();
+const AttachmentAssets = new Map();
 let assetSequence = 1;
 const History = { past: [], future: [], limit: 60 };
 function nextId() {
@@ -28,15 +30,17 @@ function remember(before) {
   History.past.push(before);
   if (History.past.length > History.limit) History.past.shift();
   History.future.length = 0;
-  pruneImageAssets();
+  pruneAssets();
   return true;
 }
 function editDocument(fn) {
   const before = snapshot();
   try {
     fn();
+    pruneUnusedAttachments();
   } catch (err) {
     State = JSON.parse(before);
+    pruneAssets();
     throw err;
   }
   return remember(before);
@@ -45,22 +49,33 @@ function undo() {
   if (!History.past.length) return false;
   History.future.push(snapshot());
   State = JSON.parse(History.past.pop());
+  pruneAssets();
   return true;
 }
 function redo() {
   if (!History.future.length) return false;
   History.past.push(snapshot());
   State = JSON.parse(History.future.pop());
+  pruneAssets();
   return true;
 }
 function clearHistory() {
   History.past.length = History.future.length = 0;
 }
-function pruneImageAssets() {
-  const used = new Set(State.layers.map((l) => l.assetId));
-  for (const text of [...History.past, ...History.future])
-    for (const l of JSON.parse(text).layers) used.add(l.assetId);
-  for (const id of ImageAssets.keys()) if (!used.has(id)) ImageAssets.delete(id);
+function pruneUnusedAttachments() {
+  const used = new Set(State.components.map((c) => c.datasheetId));
+  State.attachments = State.attachments.filter((a) => used.has(a.id));
+}
+function pruneAssets() {
+  const images = new Set(State.layers.map((l) => l.assetId));
+  const pdfs = new Set(State.attachments.map((a) => a.id));
+  for (const text of [...History.past, ...History.future]) {
+    const state = JSON.parse(text);
+    for (const l of state.layers) images.add(l.assetId);
+    for (const a of state.attachments || []) pdfs.add(a.id);
+  }
+  for (const id of ImageAssets.keys()) if (!images.has(id)) ImageAssets.delete(id);
+  for (const id of AttachmentAssets.keys()) if (!pdfs.has(id)) AttachmentAssets.delete(id);
 }
 function nextRef(prefix) {
   let i = 1;
@@ -80,7 +95,6 @@ function makeComponent(fpId, params, x, y, prefix) {
     ref: nextRef(prefix || refPrefixFor(fpId, "")),
     value: "",
     footprint: fp.label,
-    kicad: fp.kicad || "",
     x,
     y,
     rot: 0,
@@ -112,6 +126,7 @@ function normalizeComponentGeometry(c) {
     }
   }
   delete c.scale;
+  delete c.kicad;
   return c;
 }
 function documentPayload() {
@@ -126,6 +141,12 @@ function documentPayload() {
         throw new Error("A photograph is missing. Save was stopped to protect the project.");
       return { ...meta, dataURL: asset.dataURL };
     }),
+    attachments: State.attachments.map((a) => {
+      const bytes = AttachmentAssets.get(a.id);
+      if (!bytes)
+        throw new Error("A datasheet is missing. Save was stopped to protect the project.");
+      return { ...a, dataURL: pdfDataURL(bytes) };
+    }),
   };
 }
 function serializeProject() {
@@ -133,7 +154,7 @@ function serializeProject() {
 }
 
 // Refuse unsupported data before replacing the open project. This is deliberately
-// strict: malformed geometry must not become a plausible-looking wrong netlist.
+// strict: malformed geometry must not become plausible-looking wrong connectivity.
 function validateDocument(input) {
   const d = structuredClone(input);
   const fail = (message) => {
@@ -156,6 +177,8 @@ function validateDocument(input) {
   list(d.components, "components");
   list(d.traces, "traces");
   list(d.vias, "vias");
+  if (d.attachments === undefined) d.attachments = [];
+  list(d.attachments, "datasheets", 10000);
   const ids = new Set(),
     sides = new Set(),
     refs = new Set();
@@ -208,7 +231,10 @@ function validateDocument(input) {
     refs.add(c.ref.toUpperCase());
     str(c.value, "value");
     str(c.footprint, "footprint");
-    str(c.kicad, "KiCad footprint");
+    if (c.datasheetId !== undefined) {
+      num(c.datasheetId, "datasheet ID", 1, Number.MAX_SAFE_INTEGER - 1);
+      if (!Number.isInteger(c.datasheetId)) fail("datasheet ID");
+    }
     if (!c.body) fail("component body");
     num(c.body.w, "body width", 1e-6, 1e7);
     num(c.body.h, "body height", 1e-6, 1e7);
@@ -245,6 +271,25 @@ function validateDocument(input) {
       if (p.hole !== undefined) num(p.hole, "pad hole", 0, p.w);
     }
   }
+  for (const a of d.attachments) {
+    id(a);
+    str(a.name, "datasheet name");
+    if (!a.name.trim() || !/\.pdf$/i.test(a.name) || /[\x00-\x1f]/.test(a.name))
+      fail("datasheet name");
+    if (a.mime !== "application/pdf") fail("datasheet MIME type");
+    num(a.size, "datasheet size", 5, 500000000);
+    if (!Number.isInteger(a.size)) fail("datasheet size");
+    if (typeof a.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(a.sha256)) fail("datasheet SHA-256");
+    if (
+      typeof a.dataURL !== "string" ||
+      !/^data:application\/pdf;base64,[A-Za-z0-9+/=]+$/.test(a.dataURL)
+    )
+      fail("embedded PDF data");
+  }
+  const attachmentIds = new Set(d.attachments.map((a) => a.id));
+  for (const c of d.components)
+    if (c.datasheetId !== undefined && !attachmentIds.has(c.datasheetId))
+      fail("missing datasheet reference");
   for (const t of d.traces) {
     id(t);
     side(t);
@@ -318,7 +363,6 @@ function migrateLegacy(raw) {
       ref: c.ref,
       value: c.value || c.part || "",
       footprint: fp.label,
-      kicad: c.kicad || fp.kicad || "",
       x: c.x,
       y: c.y,
       rot: c.rot || 0,
@@ -368,6 +412,10 @@ function migrateLegacy(raw) {
       height: 1,
     };
   });
-  d.nextId = Math.max(0, ...d.layers.concat(d.components, d.traces, d.vias).map((o) => o.id)) + 1;
+  d.nextId =
+    Math.max(
+      0,
+      ...d.layers.concat(d.components, d.traces, d.vias, d.attachments).map((o) => o.id),
+    ) + 1;
   return { app: "pcb-reveng-simple", version: 1, ...d };
 }

@@ -222,18 +222,23 @@ const path = require("node:path");
     await page.locator("[data-view=both]").click();
     await page.locator("#export-menu summary").click();
     const download = page.waitForEvent("download");
-    await page.getByRole("button", { name: "KiCad netlist (.net)" }).click();
-    await (await download).saveAs(path.join(out, "Amplifier.net"));
-    const netlist = await fs.readFile(path.join(out, "Amplifier.net"), "utf8");
-    assert.match(netlist, /GND/);
-    assert.match(netlist, /\(ref R1\)/);
+    await page.getByRole("button", { name: "AI package" }).click();
+    await (await download).saveAs(path.join(out, "Amplifier-AI.zip"));
+    const zip = require("../vendor/fflate-0.8.3.js").unzipSync(
+      new Uint8Array(await fs.readFile(path.join(out, "Amplifier-AI.zip"))),
+    );
+    assert.ok(zip["context.md"]);
+    const graph = JSON.parse(require("../vendor/fflate-0.8.3.js").strFromU8(zip["graph.json"]));
+    assert.ok(graph.nets.some((n) => n.name === "GND"));
+    assert.ok(graph.components.some((c) => c.reference === "R1"));
     await clickWorld(0, 50);
     await page.screenshot({ path: path.join(out, "workspace.png") });
     await require("./browser-resize.cjs")({ page, out, clickWorld, setField });
     await require("./browser-selection.cjs")({ page, out, clickWorld });
+    await require("./browser-datasheets.cjs")({ page, out });
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: photo import, calibration, alignment, placement, trace/via connectivity, custom pads, naming, undo/redo, save/reopen, KiCad netlist, no browser errors.",
+      "PASS: photo import, calibration, alignment, placement, trace/via connectivity, custom pads, naming, undo/redo, save/reopen, AI package, no browser errors.",
     );
   } catch (err) {
     console.error("Browser errors:", errors);

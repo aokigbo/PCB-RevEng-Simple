@@ -1,11 +1,11 @@
 # PCB RevEng Simple
 
 A focused PCB reverse-engineering workspace: photographs → components and pads →
-traces and vias → electrical nets → KiCad netlist.
+traces and vias → electrical nets → portable AI analysis package.
 
 A smaller derivative of [gamerpaddy/PCB-RevEng](https://github.com/gamerpaddy/PCB-RevEng),
-starting at `f820cc3`. One board, one workspace, five tools. No runtime dependencies,
-accounts, browser project database, AI, multiplayer or built-in schematic editor.
+starting at `f820cc3`. One board, one workspace, five tools. No accounts,
+browser project database, AI chat, multiplayer or built-in schematic editor.
 
 ## Run
 
@@ -36,14 +36,17 @@ opening `index.html` directly.
    support manually placed pads.
 5. Draw traces. Click to add corners, click a conductor or press Enter to finish.
    Place vias to connect the front and back. Inspect and name nets in Properties.
-6. **Save As** chooses a `.pcbrev` file. **Save / Ctrl+S** updates that same file.
-7. Export a **KiCad `.net` netlist** or a **BOM `.csv`**.
+6. Select a component to attach a PDF datasheet. Open it in a new browser tab,
+   replace it or remove it in Properties. Identical PDFs are stored once even when
+   several components use them.
+7. **Save As** chooses a `.pcbrev` file. **Save / Ctrl+S** updates that same file.
+8. Export a **BOM `.csv`** or an **AI package `.zip`**.
 
-The `.net` export contains components and pad connectivity, not a finished KiCad
-schematic or routed PCB. Assign or verify footprints in KiCad. The small package
-catalog is a tracing aid; custom footprints can leave the KiCad footprint blank.
+The AI package contains `graph.json`, a readable `context.md`, and referenced
+datasheets. It uses a net-centric representation of connectivity and includes
+warnings for incomplete reconstructions. Board photos and geometry are omitted.
 
-Files are self-contained, versioned JSON with embedded photographs. Put them in
+Files are self-contained, versioned JSON with embedded photographs and PDFs. Put them in
 an Obsidian vault or any normal folder. The actual file is the source of truth:
 there is **no browser autosave**. Unsaved work needs Save before closing the app.
 
@@ -53,12 +56,12 @@ there is **no browser autosave**. Unsaved work needs Save before closing the app
   widths, same-side crossings, plated pads and front/back vias. Deleting or moving
   copper recalculates connectivity. Names do not create invisible connections.
 - Touching copper with conflicting names is highlighted. Disconnected groups with
-  the same imported name are reported. Resolve warnings before netlist export.
+  the same imported name are reported. AI packages include these warnings.
 - Saves are marked Saved only after the write closes successfully. Canceled and
   failed saves keep the old handle/checkpoint; edits during a write stay Unsaved.
   Files modified externally are not overwritten by ordinary Save.
 - Undo/redo retains 60 document changes in memory, including photo import and
-  alignment; image bytes are shared between snapshots. View changes aren't edits.
+  alignment; photo and PDF bytes are shared between snapshots. View changes aren't edits.
 - One board and two copper sides only. Alignment corrects translation, rotation
   and uniform scale, not perspective distortion. Use flat, perpendicular photos
   or scans. Very large scans/boards have not been performance-qualified.
@@ -81,8 +84,8 @@ npm run format:check
 Node 20+ is recommended. Python 3 runs the local preview. Playwright and Prettier
 are development-only dependencies; they are not loaded by the application.
 Browser tests use deterministic file-picker handles and a synthetic board image.
-They verify the UI workflow and saved JSON round trip, but cannot validate the OS
-file-picker dialogs. Native dialog checks and an actual KiCad import remain manual.
+They verify the UI workflow, PDF attachments, saved JSON round trip and ZIP contents,
+but cannot validate the OS file-picker dialogs.
 `CHROME_PATH` can select an installed Chrome; `TEST_URL` overrides the preview URL;
 `TEST_OUTPUT` selects the browser-test artifact folder.
 
@@ -92,7 +95,8 @@ and [validation record](docs/VALIDATION.md).
 ## Attribution
 
 The original PCB RevEng application is by gamerpaddy. This derivative retains
-adapted parametric footprints, pad/segment geometry, and KiCad netlist/CSV export
-code. Full upstream history is retained in the original local checkout; this
+adapted parametric footprints and pad/segment geometry. The browser ZIP library is
+[fflate 0.8.3](https://github.com/101arrowz/fflate) under its bundled MIT notice in
+`vendor/fflate-LICENSE.txt`. Full upstream history is retained in the original local checkout; this
 repository is uploaded as a source snapshot. Upstream's README license statement is
 preserved in [UPSTREAM-NOTICE.md](UPSTREAM-NOTICE.md); no replacement license is implied.

@@ -164,6 +164,7 @@ module.exports = async ({ page, out, clickWorld }) => {
         History.past.length === 0 &&
         !ProjectFile.busy,
     );
+    assert.equal(await page.evaluate(() => State.components.some((c) => "kicad" in c)), false);
     await page.locator("[data-view=both]").click();
     const zoom = await page.evaluate(() => View.zoom);
     const canvas = await page.locator("#canvas").boundingBox();
@@ -368,11 +369,14 @@ module.exports = async ({ page, out, clickWorld }) => {
   assert.deepEqual((await state()).doc, saved);
   await page.locator("#export-menu summary").click();
   const download = page.waitForEvent("download");
-  await page.getByRole("button", { name: "KiCad netlist (.net)" }).click();
-  await (await download).saveAs(path.join(out, "Selection.net"));
-  const netlist = await fs.readFile(path.join(out, "Selection.net"), "utf8");
-  assert.match(netlist, /GND/);
-  assert.match(netlist, /\(ref R1\)/);
+  await page.getByRole("button", { name: "AI package" }).click();
+  await (await download).saveAs(path.join(out, "Selection-AI.zip"));
+  const zip = require("../vendor/fflate-0.8.3.js").unzipSync(
+    new Uint8Array(await fs.readFile(path.join(out, "Selection-AI.zip"))),
+  );
+  const graph = JSON.parse(require("../vendor/fflate-0.8.3.js").strFromU8(zip["graph.json"]));
+  assert.ok(graph.nets.some((n) => n.name === "GND"));
+  assert.ok(graph.components.some((c) => c.reference === "R1"));
   console.log(
     "PASS: full-containment marquee, mixed groups, anchored endpoints, Ctrl/Cmd copy/paste, net stripping, multi-delete, opposite-corner/Shift resize, pin labels and save/reopen.",
   );

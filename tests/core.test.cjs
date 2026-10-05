@@ -153,27 +153,27 @@ test("all offered packages materialize valid pad geometry", () => {
     true,
   );
 });
-test("KiCad export contains exactly the reconstructed component pins, with escaped values", () => {
+test("AI graph is net-centric and BOM uses the internal package name", () => {
   const run = core();
   run(fs.readFileSync("js/export.js", "utf8"));
   run(setup);
   run(`State.components=[makeComponent('chip2',{},0,0),makeComponent('chip2',{},50,0)];
+    State.components[1].ref='R2';
     State.components[0].value='10k "precision"';
+    State.components[0].pins[1].name='OUT';
     const a=pinWorldPos(State.components[0],State.components[0].pins[1]),b=pinWorldPos(State.components[1],State.components[1].pins[0]);
-    State.traces=[{id:3,side:'front',points:[a,b],width:1,netName:'GND'}];rebuildConnectivity();`);
-  const text = run("exportKiCad()");
-  assert.match(text, /\(name GND\)/);
-  assert.equal((text.match(/\(node /g) || []).length, 4);
-  assert.ok(text.includes('\\"precision\\"'));
-  // Independent minimal S-expression reader checks balanced/escaped structure.
-  const tokens = text.match(/"(?:\\.|[^"\\])*"|[()]|[^\s()]+/g);
-  let depth = 0;
-  for (const token of tokens) {
-    if (token === "(") depth++;
-    if (token === ")") depth--;
-    assert.ok(depth >= 0);
-  }
-  assert.equal(depth, 0);
+    State.traces=[{id:3,side:'front',points:[a,b],width:1,netName:'GND'}];
+    const model=buildElectricalExportModel();`);
+  const graph = JSON.parse(run("buildGraphJSON(model)"));
+  assert.equal(graph.schema, "pcb-reveng-ai-graph-v1");
+  assert.equal(graph.components[0].pins[1].net, "GND");
+  assert.equal(graph.nets.find((n) => n.name === "GND").pins.length, 2);
+  assert.equal(graph.nets.find((n) => n.name === "GND").userNamed, true);
+  assert.equal(graph.nets.find((n) => n.name === "GND").copperObjectCount, 3);
+  assert.equal("x" in graph.components[0], false);
+  assert.equal("body" in graph.components[0], false);
+  assert.match(run("buildContextMarkdown(model)"), /OUT \| 2 → GND/);
+  assert.match(run("exportBOM()"), /Chip 0805/);
   assert.equal(
     run("_toCSV(" + JSON.stringify([["a,b", 'x"y', "a\rb"]]) + ")"),
     '"a,b","x""y","a\rb"',

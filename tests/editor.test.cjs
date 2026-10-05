@@ -67,7 +67,9 @@ test("moving rotated/back pads and components applies one deduplicated trace anc
 });
 test("component copy has fresh IDs/references, preserves data and strips all net assignments", () => {
   const run = editor();
-  run(`a.value='LM358';a.pins[0].name='Sensor Ground';a.pins[0].netName='GND';
+  run(`a.value='LM358';a.datasheetId=nextId();
+    State.attachments=[{id:a.datasheetId,name:'part.pdf',mime:'application/pdf',size:5,sha256:'0'.repeat(64)}];
+    a.pins[0].name='Sensor Ground';a.pins[0].netName='GND';
     State.traces=[{id:nextId(),side:'front',width:1,points:[pinWorldPos(a,a.pins[0]),{x:0,y:50}],netName:'GND'}];
     Editor.selection={type:'component',object:a};const before=snapshot();copySelected();`);
   assert.equal(run("snapshot()"), run("before"));
@@ -77,6 +79,7 @@ test("component copy has fresh IDs/references, preserves data and strips all net
   assert.equal(run("pasted.ref"), "U3");
   assert.equal(run("pasted.value"), "LM358");
   assert.equal(run("pasted.footprint"), run("a.footprint"));
+  assert.equal(run("pasted.datasheetId"), run("a.datasheetId"));
   assert.equal(run("pasted.pins[0].name"), "Sensor Ground");
   assert.equal(run("pasted.pins[0].num"), "1");
   assert.equal(run("pasted.pins.some(p=>'netName' in p)"), false);

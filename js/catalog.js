@@ -151,12 +151,6 @@ Footprints.register({
         "7343-31": [7.3, 4.3],
         "7343-43": [7.3, 4.3],
       };
-      const kem = {
-        "3216-18": "_Kemet-A",
-        "6032-28": "_Kemet-C",
-        "7343-31": "_Kemet-D",
-        "7343-43": "_Kemet-X",
-      };
       const [L, W] = tdims[code] || [3.2, 1.6];
       const px = L * 0.42,
         pw = L * 0.375,
@@ -169,7 +163,6 @@ Footprints.register({
         ],
         body: { w: L, h: W },
         polar: true,
-        kicad: "Capacitor_Tantalum_SMD:CP_EIA-" + code + (kem[code] || ""),
       };
     }
     const dims = {
@@ -187,7 +180,7 @@ Footprints.register({
     };
     const [L, W] = dims[p.size];
     // IPC-7351B nominal (density level B) land patterns, [px pad centre, pw pad length (along
-    // axis), ph pad width (across)] mm — matching the KiCad Resistor_SMD reference footprints
+    // axis), ph pad width (across)] mm
     // (pad centre = half the centre-to-centre spacing). 0406/0612 are non-standard wide chips
     // (no IPC land pattern): they reuse the 0402/0603 termination but widen across the body.
     const ipc = {
@@ -216,18 +209,6 @@ Footprints.register({
       ph = W * 1.1;
       px = L / 2 + W * 0.35; // fallback for any untabulated size
     }
-    const code = {
-      "0201": "0603",
-      "0402": "1005",
-      "0406": "1016",
-      "0603": "1608",
-      "0612": "1632",
-      "0805": "2012",
-      1206: "3216",
-      1210: "3225",
-      2010: "5025",
-      2512: "6332",
-    }[p.size];
     return {
       label: "Chip " + p.size,
       pins: [
@@ -236,7 +217,6 @@ Footprints.register({
       ],
       body: { w: L, h: W },
       polar: !!p.polarized,
-      kicad: "Resistor_SMD:R_" + p.size + "_" + code + "Metric",
     };
   },
 });
@@ -254,7 +234,6 @@ Footprints.register({
         _pin(2, p.span / 2, 0, { shape: "circle", w: 1.6, h: 1.6 }),
       ],
       body: { w: p.span * 0.6, h: 2.5 },
-      kicad: "Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P" + p.span.toFixed(2) + "mm_Horizontal",
     };
   },
 });
@@ -293,12 +272,6 @@ Footprints.register({
       ],
       body: { w: dia, h: dia, shape: square ? "rect" : "circle" },
       polar: pol,
-      kicad:
-        (pol ? "Capacitor_THT:CP_Radial_D" : "Capacitor_THT:C_Radial_D") +
-        dia.toFixed(1) +
-        "mm_P" +
-        d.toFixed(2) +
-        "mm",
     };
   },
 });
@@ -336,17 +309,10 @@ Footprints.register({
       for (let i = 0; i < top; i++)
         pins.push(_pin(3 + i + 1, top === 2 ? (i ? -px : px) : (1 - i) * px, -py, { ...pad }));
     }
-    const kicadName = {
-      "SOT-23": "SOT-23",
-      "SOT-323": "SOT-323_SC-70",
-      "SOT-523": "SOT-523",
-      "SOT-723": "SOT-723",
-    }[p.pkg];
     return {
       label: p.pkg + (n > 3 ? "-" + n : ""),
       pins,
       body: { w: 3.0 * k, h: 1.6 * k },
-      kicad: "Package_TO_SOT_SMD:" + (n === 3 ? kicadName : "SOT-23-" + n),
     };
   },
 });
@@ -384,7 +350,6 @@ Footprints.register({
       ],
       body: { w: L, h: W },
       symbol: "diode",
-      kicad: "Diode_SMD:D_" + p.pkg,
     };
   },
 });
@@ -413,7 +378,6 @@ Footprints.register({
       label: "Free-" + pins.length,
       pins,
       body: { w: parseFloat(p.w) || 10, h: parseFloat(p.h) || 10 },
-      kicad: "",
     };
   },
 });
@@ -452,9 +416,6 @@ Footprints.register({
       label: tht ? "THT pad D" + d.toFixed(1) : "Test point D" + d.toFixed(1),
       pins: [_pin(1, 0, 0, opts)],
       body: { w: d * 1.3, h: d * 1.3, shape: "circle" },
-      kicad: tht
-        ? "TestPoint:TestPoint_THTPad_D" + d.toFixed(1) + "mm"
-        : "TestPoint:TestPoint_Pad_D" + d.toFixed(1) + "mm",
     };
   },
 });
@@ -487,7 +448,6 @@ Footprints.register({
       label: "DIP-" + n,
       pins,
       body: { w: half * 2.54, h: w - 1.5 },
-      kicad: "Package_DIP:DIP-" + n + "_W" + w.toFixed(2) + "mm",
     };
   },
 });
@@ -524,16 +484,11 @@ Footprints.register({
       pins.push(_pin(i + 1, x, w / 2, { w: pt * 0.55, h: 1.5 }));
       pins.push(_pin(n - i, x, -w / 2, { w: pt * 0.55, h: 1.5 }));
     }
-    let fam = "SOIC-" + n,
-      kicad = "Package_SO:SOIC-" + n + "_3.9x4.9mm_P1.27mm";
+    let fam = "SOIC-" + n;
     if (pt !== 1.27) {
       fam = (w <= 3.0 ? "MSOP-" : "TSSOP-") + n;
-      kicad =
-        w <= 3.0
-          ? "Package_SO:MSOP-" + n + "_3x3mm_P" + p.pitch + "mm"
-          : "Package_SO:TSSOP-" + n + "_4.4x5mm_P" + p.pitch + "mm";
     }
-    return { label: fam + " P" + p.pitch, pins, body: { w: half * pt + 0.5, h: w - 2 }, kicad };
+    return { label: fam + " P" + p.pitch, pins, body: { w: half * pt + 0.5, h: w - 2 } };
   },
 });
 
@@ -563,14 +518,6 @@ Footprints.register({
       label: "1×" + n + " P" + p.pitch,
       pins,
       body: { w: n * pt, h: pt },
-      kicad:
-        "Connector_PinHeader_" +
-        p.pitch +
-        "mm:PinHeader_1x" +
-        String(n).padStart(2, "0") +
-        "_P" +
-        p.pitch +
-        "mm_Vertical",
     };
   },
 });

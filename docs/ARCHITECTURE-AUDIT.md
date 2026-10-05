@@ -60,5 +60,5 @@ Unsupported browsers get an explicit requirement message, not a fake disk-save.
    deployment-only workflow with checks; deployment remains explicit.
 5. Exercise the browser workflow from photographs through calibration, alignment,
    components, custom pads, traces, vias, net naming, undo, save/reopen and export.
-   Record actual validation and limitations; do not claim KiCad desktop validation
-   unless KiCad is available and run.
+   Record actual validation and limitations; do not claim external CAD validation
+   unless the target application is available and run.

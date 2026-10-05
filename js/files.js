@@ -39,7 +39,8 @@ async function prepareProject(text) {
   const legacy = raw.app === "pcb-reveng";
   if (legacy) raw = migrateLegacy(raw);
   const candidate = validateDocument(raw),
-    assets = [];
+    assets = [],
+    attachments = [];
   // Decode before committing any state or changing the current file handle.
   for (const l of candidate.layers) {
     const img = await decodePhoto(l.dataURL);
@@ -52,12 +53,30 @@ async function prepareProject(text) {
     delete l.dataURL;
     l.assetId = assetId;
   }
-  return { candidate, assets, legacy };
+  for (const a of candidate.attachments) {
+    let bytes;
+    try {
+      bytes = pdfBytes(a.dataURL);
+    } catch {
+      throw new Error(
+        "An embedded datasheet could not be decoded. The open project has not changed.",
+      );
+    }
+    if (bytes.length !== a.size || (await sha256(bytes)) !== a.sha256)
+      throw new Error(
+        "An embedded datasheet failed its size or checksum check. The open project has not changed.",
+      );
+    attachments.push([a.id, bytes]);
+    delete a.dataURL;
+  }
+  return { candidate, assets, attachments, legacy };
 }
 function adoptProject(prepared, handle, stamp) {
   State = prepared.candidate;
   ImageAssets.clear();
   prepared.assets.forEach(([k, v]) => ImageAssets.set(k, v));
+  AttachmentAssets.clear();
+  prepared.attachments.forEach(([k, v]) => AttachmentAssets.set(k, v));
   clearHistory();
   ProjectFile.handle = prepared.legacy ? null : handle;
   ProjectFile.stamp = prepared.legacy ? null : stamp;
@@ -157,6 +176,7 @@ function newProject() {
   if (hasPendingWork() && !confirm("Discard unsaved changes and start a new project?")) return;
   State = emptyDocument();
   ImageAssets.clear();
+  AttachmentAssets.clear();
   clearHistory();
   ProjectFile.handle = null;
   ProjectFile.saved = null;
