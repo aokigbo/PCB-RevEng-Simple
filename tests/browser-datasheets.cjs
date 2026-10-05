@@ -73,11 +73,20 @@ module.exports = async ({ page, out }) => {
       window.openedBlobType = blob.type;
       return create.call(URL, blob);
     };
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      window.openedPDFLink = { href: this.href, target: this.target, rel: this.rel };
+      return click.call(this);
+    };
   });
   const popup = page.waitForEvent("popup");
   await page.locator("#inspector").getByRole("button", { name: "Open", exact: true }).click();
   assert.equal(await page.evaluate(() => window.openedBlobType), "application/pdf");
-  assert.match((await popup).url(), /^blob:/);
+  await popup;
+  const openedLink = await page.evaluate(() => window.openedPDFLink);
+  assert.match(openedLink.href, /^blob:/);
+  assert.equal(openedLink.target, "_blank");
+  assert.match(openedLink.rel, /noopener/);
   await page.evaluate(() =>
     change(() => {
       State.traces.push({
