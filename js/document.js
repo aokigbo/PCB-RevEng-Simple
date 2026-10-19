@@ -1,13 +1,15 @@
 "use strict";
 
-// Only document metadata lives in State. Binary assets and history are session-only.
 function emptyDocument() {
   return {
     name: "Untitled board",
-    pxPerMm: 10,
-    calibrated: false,
-    nextId: 1,
-    layers: [],
+    nextId: 3,
+    calibration: null,
+    physicalLayers: [
+      { id: 1, description: "Top" },
+      { id: 2, description: "Bottom" },
+    ],
+    scans: [],
     components: [],
     traces: [],
     vias: [],
@@ -15,12 +17,17 @@ function emptyDocument() {
   };
 }
 let State = emptyDocument();
-const ImageAssets = new Map();
-const AttachmentAssets = new Map();
-let assetSequence = 1;
+let idFloor = State.nextId;
 const History = { past: [], future: [], limit: 60 };
+function reserveId() {
+  const id = Math.max(State.nextId, idFloor);
+  idFloor = id + 1;
+  return id;
+}
 function nextId() {
-  return State.nextId++;
+  const id = reserveId();
+  State.nextId = id + 1;
+  return id;
 }
 function snapshot() {
   return JSON.stringify(State);
@@ -30,18 +37,17 @@ function remember(before) {
   History.past.push(before);
   if (History.past.length > History.limit) History.past.shift();
   History.future.length = 0;
-  pruneAssets();
   return true;
 }
 function editDocument(fn) {
   const before = snapshot();
   try {
     fn();
-    pruneUnusedAttachments();
-  } catch (err) {
+    const used = new Set(State.components.map((c) => c.datasheetId));
+    State.attachments = State.attachments.filter((a) => used.has(a.id));
+  } catch (error) {
     State = JSON.parse(before);
-    pruneAssets();
-    throw err;
+    throw error;
   }
   return remember(before);
 }
@@ -49,373 +55,315 @@ function undo() {
   if (!History.past.length) return false;
   History.future.push(snapshot());
   State = JSON.parse(History.past.pop());
-  pruneAssets();
   return true;
 }
 function redo() {
   if (!History.future.length) return false;
   History.past.push(snapshot());
   State = JSON.parse(History.future.pop());
-  pruneAssets();
   return true;
 }
 function clearHistory() {
   History.past.length = History.future.length = 0;
 }
-function pruneUnusedAttachments() {
-  const used = new Set(State.components.map((c) => c.datasheetId));
-  State.attachments = State.attachments.filter((a) => used.has(a.id));
+function layerName(id, description = false) {
+  const i = State.physicalLayers.findIndex((l) => l.id === id),
+    l = State.physicalLayers[i];
+  return i < 0
+    ? "Missing layer"
+    : "L" + (i + 1) + (description && l.description ? " — " + l.description : "");
 }
-function pruneAssets() {
-  const images = new Set(State.layers.map((l) => l.assetId));
-  const pdfs = new Set(State.attachments.map((a) => a.id));
-  for (const text of [...History.past, ...History.future]) {
-    const state = JSON.parse(text);
-    for (const l of state.layers) images.add(l.assetId);
-    for (const a of state.attachments || []) pdfs.add(a.id);
-  }
-  for (const id of ImageAssets.keys()) if (!images.has(id)) ImageAssets.delete(id);
-  for (const id of AttachmentAssets.keys()) if (!pdfs.has(id)) AttachmentAssets.delete(id);
+function viaLayerIds(v, layers = State.physicalLayers) {
+  const a = layers.findIndex((l) => l.id === v.fromLayerId),
+    b = layers.findIndex((l) => l.id === v.toLayerId);
+  return a < 0 || b < 0 ? [] : layers.slice(Math.min(a, b), Math.max(a, b) + 1).map((l) => l.id);
+}
+function viaOnLayer(v, id) {
+  return viaLayerIds(v).includes(id);
+}
+function reorderLayers(ids, approve = () => true) {
+  if (
+    ids.length !== State.physicalLayers.length ||
+    new Set(ids).size !== ids.length ||
+    ids.some((id) => !State.physicalLayers.some((l) => l.id === id))
+  )
+    throw new Error("Invalid layer order.");
+  const layers = ids.map((id) => State.physicalLayers.find((l) => l.id === id));
+  const changed = State.vias.filter(
+    (v) =>
+      viaLayerIds(v)
+        .sort((a, b) => a - b)
+        .join() !==
+      viaLayerIds(v, layers)
+        .sort((a, b) => a - b)
+        .join(),
+  ).length;
+  if (changed && !approve(changed)) return false;
+  return editDocument(() => {
+    State.physicalLayers = layers;
+  });
+}
+function deletePhysicalLayer(id) {
+  if (State.physicalLayers.length < 2) throw new Error("Keep at least one physical layer.");
+  const spans = new Map(State.vias.map((v) => [v.id, viaLayerIds(v).filter((x) => x !== id)]));
+  return editDocument(() => {
+    State.physicalLayers = State.physicalLayers.filter((l) => l.id !== id);
+    for (const key of ["scans", "components", "traces"])
+      State[key] = State[key].filter((o) => o.layerId !== id);
+    State.vias = State.vias.filter((v) => spans.get(v.id).length >= 2);
+    for (const v of State.vias) {
+      const s = spans.get(v.id);
+      v.fromLayerId = s[0];
+      v.toLayerId = s.at(-1);
+    }
+  });
 }
 function nextRef(prefix) {
   let i = 1;
   while (State.components.some((c) => c.ref.toUpperCase() === (prefix + i).toUpperCase())) i++;
   return prefix + i;
 }
-function nextPinNumber(component) {
+function nextPinNumber(c) {
   let i = 1;
-  while (component.pins.some((p) => p.num === String(i))) i++;
+  while (c.pins.some((p) => p.num === String(i))) i++;
   return String(i);
 }
-function makeComponent(fpId, params, x, y, prefix) {
+function makeComponent(
+  fpId,
+  params,
+  x,
+  y,
+  prefix,
+  layerId = State.physicalLayers[0].id,
+  preview = false,
+) {
   const fp = generateFootprint(fpId, params);
-  if (!fp) throw new Error("Unknown component package");
-  return normalizeComponentGeometry({
-    id: nextId(),
+  if (!fp) throw new Error("Unknown package.");
+  return {
+    id: preview ? 0 : nextId(),
     ref: nextRef(prefix || refPrefixFor(fpId, "")),
     value: "",
     footprint: fp.label,
     x,
     y,
     rot: 0,
-    side: "front",
-    body: { ...fp.body },
-    pins: fp.pins.map((p) => ({ ...p, num: String(p.num) })),
-  });
-}
-// File-boundary migration: all editing/rendering uses physical millimetres.
-function normalizeComponentGeometry(c) {
-  const scale = c.scale === undefined ? 1 : c.scale;
-  // Older round bodies were drawn with their larger dimension as the diameter.
-  if (c.scale !== undefined && c.body.shape === "circle")
-    c.body.w = c.body.h = Math.max(c.body.w, c.body.h);
-  c.body.w *= scale;
-  c.body.h *= scale;
-  c.body.xmm = (c.body.xmm ?? 0) * scale;
-  c.body.ymm = (c.body.ymm ?? 0) * scale;
-  for (const p of c.pins) {
-    p.xmm *= scale;
-    p.ymm *= scale;
-    p.w *= scale;
-    p.h *= scale;
-    if (p.hole !== undefined) p.hole *= scale;
-    if (p.shape === "circle") {
-      p.h = p.w;
-      // Materialize the old drawing fallback so resizing never changes the drill.
-      if (p.tht !== false && !p.hole) p.hole = p.w * 0.4;
-    }
-  }
-  delete c.scale;
-  delete c.kicad;
-  return c;
-}
-function documentPayload() {
-  return {
-    app: "pcb-reveng-simple",
-    version: 1,
-    ...State,
-    layers: State.layers.map((l) => {
-      const { assetId, ...meta } = l;
-      const asset = ImageAssets.get(assetId);
-      if (!asset)
-        throw new Error("A photograph is missing. Save was stopped to protect the project.");
-      return { ...meta, dataURL: asset.dataURL };
-    }),
-    attachments: State.attachments.map((a) => {
-      const bytes = AttachmentAssets.get(a.id);
-      if (!bytes)
-        throw new Error("A datasheet is missing. Save was stopped to protect the project.");
-      return { ...a, dataURL: pdfDataURL(bytes) };
+    layerId,
+    body: { ...fp.body, w: fp.body.w * 10, h: fp.body.h * 10, x: 0, y: 0 },
+    pins: fp.pins.map((p) => {
+      const { xmm, ymm, ...q } = p;
+      return {
+        ...q,
+        num: String(p.num),
+        x: xmm * 10,
+        y: ymm * 10,
+        w: p.w * 10,
+        h: (p.shape === "circle" ? p.w : p.h) * 10,
+        ...(p.shape === "circle" && p.tht !== false ? { hole: (p.hole || p.w * 0.4) * 10 } : {}),
+      };
     }),
   };
+}
+function documentPayload() {
+  return { app: "pcb-reveng-simple", version: 2, ...State };
 }
 function serializeProject() {
   return JSON.stringify(documentPayload(), null, 2) + "\n";
 }
-
-// Refuse unsupported data before replacing the open project. This is deliberately
-// strict: malformed geometry must not become plausible-looking wrong connectivity.
 function validateDocument(input) {
-  const d = structuredClone(input);
-  const fail = (message) => {
-    throw new Error("Invalid project: " + message);
+  const d = structuredClone(input),
+    ids = new Set();
+  const fail = (s) => {
+    throw new Error("Invalid project: " + s);
   };
-  const num = (v, label, min = -1e8, max = 1e8) => {
-    if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) fail(label);
+  const num = (v, s, min = -1e12, max = 1e12) => {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) fail(s);
   };
-  const str = (v, label) => {
-    if (typeof v !== "string" || v.length > 10000) fail(label);
+  const str = (v, s) => {
+    if (typeof v !== "string" || v.length > 10000) fail(s);
   };
-  const list = (v, label, max = 100000) => {
-    if (!Array.isArray(v) || v.length > max) fail(label);
+  const list = (v, s, max = 100000) => {
+    if (!Array.isArray(v) || v.length > max) fail(s);
   };
-  if (d.app !== "pcb-reveng-simple" || d.version !== 1) fail("unsupported application or version");
-  str(d.name, "project name");
-  num(d.pxPerMm, "image scale", 0.0001, 1e6);
-  if (typeof d.calibrated !== "boolean") fail("calibration state");
-  list(d.layers, "photographs", 2);
-  list(d.components, "components");
-  list(d.traces, "traces");
-  list(d.vias, "vias");
-  if (d.attachments === undefined) d.attachments = [];
-  list(d.attachments, "datasheets", 10000);
-  const ids = new Set(),
-    sides = new Set(),
-    refs = new Set();
   const id = (o) => {
     num(o.id, "object ID", 1, Number.MAX_SAFE_INTEGER - 1);
-    if (!Number.isInteger(o.id) || ids.has(o.id)) fail("duplicate object ID");
+    if (!Number.isInteger(o.id) || ids.has(o.id)) fail("duplicate ID");
     ids.add(o.id);
   };
   const xy = (o) => {
-    num(o.x, "X coordinate");
-    num(o.y, "Y coordinate");
+    num(o.x, "X");
+    num(o.y, "Y");
   };
-  const side = (o) => {
-    if (!["front", "back"].includes(o.side)) fail("only front/back are supported");
-  };
-  const label = (o) => {
-    if (o.netName !== undefined) {
-      str(o.netName, "net name");
-      if (/[\x00-\x1f]/.test(o.netName)) fail("net name contains control characters");
-    }
-  };
-  for (const l of d.layers) {
-    id(l);
-    side(l);
-    if (sides.has(l.side)) fail("more than one photograph on a side");
-    sides.add(l.side);
-    str(l.name, "photograph name");
-    num(l.tx, "image X");
-    num(l.ty, "image Y");
-    num(l.scale, "image scale", 1e-8, 1e6);
-    num(l.rot, "image rotation");
-    num(l.opacity, "opacity", 0, 1);
-    num(l.width, "image width", 1, 100000);
-    num(l.height, "image height", 1, 100000);
-    if (typeof l.mirror !== "boolean") fail("image mirror");
-    if (
-      typeof l.dataURL !== "string" ||
-      !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=\r\n]+$/.test(l.dataURL)
-    )
-      fail("photographs must be embedded PNG, JPEG or WebP");
+  if (d.app !== "pcb-reveng-simple" || d.version !== 2)
+    fail("unsupported format; use Import Existing .pcbrev for v1");
+  str(d.name, "name");
+  if (d.calibration !== null) {
+    if (!d.calibration) fail("calibration");
+    num(d.calibration.boardUnitsPerMm, "calibration", 1e-9, 1e9);
   }
+  for (const k of ["physicalLayers", "scans", "components", "traces", "vias", "attachments"])
+    list(d[k], k);
+  if (!d.physicalLayers.length) fail("at least one physical layer is required");
+  for (const l of d.physicalLayers) {
+    id(l);
+    str(l.description, "layer description");
+  }
+  const layers = new Set(d.physicalLayers.map((l) => l.id));
+  const layer = (o) => {
+    if (!layers.has(o.layerId)) fail("missing physical layer");
+  };
+  for (const s of d.scans) {
+    id(s);
+    layer(s);
+    str(s.name, "scan name");
+    str(s.sourceName, "source name");
+    num(s.width, "scan width", 1, 1e7);
+    num(s.height, "scan height", 1, 1e7);
+    if (
+      !Number.isInteger(s.width) ||
+      !Number.isInteger(s.height) ||
+      s.tileSize !== 512 ||
+      s.levels !== pyramidLevels(s.width, s.height).length
+    )
+      fail("scan pyramid");
+    for (const f of ["flipX", "flipY", "aligned"]) if (typeof s[f] !== "boolean") fail(f);
+    const t = s.transform;
+    if (!t) fail("scan transform");
+    num(t.tx, "scan X");
+    num(t.ty, "scan Y");
+    num(t.rotation, "scan rotation");
+    num(t.scale, "scan scale", 1e-9, 1e9);
+  }
+  const refs = new Set();
   for (const c of d.components) {
     id(c);
+    layer(c);
     xy(c);
-    side(c);
-    num(c.rot, "component rotation");
-    if (c.scale !== undefined) num(c.scale, "component scale", 0.001, 1000);
+    num(c.rot, "rotation");
     str(c.ref, "reference");
-    if (!c.ref.trim() || refs.has(c.ref.toUpperCase())) fail("empty or duplicate reference");
+    if (!c.ref.trim() || refs.has(c.ref.toUpperCase())) fail("duplicate reference");
     refs.add(c.ref.toUpperCase());
     str(c.value, "value");
-    str(c.footprint, "footprint");
-    if (c.datasheetId !== undefined) {
-      num(c.datasheetId, "datasheet ID", 1, Number.MAX_SAFE_INTEGER - 1);
-      if (!Number.isInteger(c.datasheetId)) fail("datasheet ID");
-    }
-    if (!c.body) fail("component body");
-    num(c.body.w, "body width", 1e-6, 1e7);
-    num(c.body.h, "body height", 1e-6, 1e7);
-    for (const axis of ["xmm", "ymm"])
-      if (c.body[axis] !== undefined) num(c.body[axis], "body offset", -1e11, 1e11);
+    str(c.footprint, "package");
+    if (!c.body) fail("body");
+    if (c.body.shape !== undefined && !["rect", "circle"].includes(c.body.shape))
+      fail("body shape");
+    xy(c.body);
+    num(c.body.w, "body width", 1e-9);
+    num(c.body.h, "body height", 1e-9);
     list(c.pins, "pads", 2000);
     const pins = new Set();
     for (const p of c.pins) {
       str(p.num, "pin number");
-      if (!p.num.trim() || pins.has(p.num)) fail("empty or duplicate pin number");
+      if (!p.num.trim() || pins.has(p.num)) fail("duplicate pin");
       pins.add(p.num);
+      xy(p);
       str(p.name ?? "", "pin name");
-      num(p.xmm, "pad X", -1e11, 1e11);
-      num(p.ymm, "pad Y", -1e11, 1e11);
-      num(p.w, "pad width", 1e-6, 1e7);
-      num(p.h, "pad height", 1e-6, 1e7);
-      if (!["circle", "rect"].includes(p.shape)) fail("pad shape");
-      if (p.tht !== undefined && typeof p.tht !== "boolean") fail("pad plating");
-      if (p.shape === "rect" && p.tht === true) fail("through-hole pads must be round");
-      if (p.hole !== undefined) num(p.hole, "pad hole", 0, Math.min(p.w, p.h));
-      label(p);
+      num(p.w, "pad width", 1e-9);
+      num(p.h, "pad height", 1e-9);
+      if (!["rect", "circle"].includes(p.shape)) fail("pad shape");
+      if (p.tht !== undefined && typeof p.tht !== "boolean") fail("drill flag");
+      if (p.hole !== undefined) num(p.hole, "drill", 0, Math.min(p.w, p.h));
+      if (p.shape === "circle" && p.w !== p.h) fail("round pad dimensions");
     }
-    normalizeComponentGeometry(c);
-    // Retain the full physical range of previously valid scaled projects.
-    num(c.body.w, "body width", 1e-6, 1e7);
-    num(c.body.h, "body height", 1e-6, 1e7);
-    num(c.body.xmm, "body offset", -1e11, 1e11);
-    num(c.body.ymm, "body offset", -1e11, 1e11);
-    for (const p of c.pins) {
-      num(p.xmm, "pad X", -1e11, 1e11);
-      num(p.ymm, "pad Y", -1e11, 1e11);
-      num(p.w, "pad width", 1e-6, 1e7);
-      num(p.h, "pad height", 1e-6, 1e7);
-      if (p.hole !== undefined) num(p.hole, "pad hole", 0, p.w);
-    }
+    delete c.kicad;
   }
-  for (const a of d.attachments) {
-    id(a);
-    str(a.name, "datasheet name");
-    if (!a.name.trim() || !/\.pdf$/i.test(a.name) || /[\x00-\x1f]/.test(a.name))
-      fail("datasheet name");
-    if (a.mime !== "application/pdf") fail("datasheet MIME type");
-    num(a.size, "datasheet size", 5, 500000000);
-    if (!Number.isInteger(a.size)) fail("datasheet size");
-    if (typeof a.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(a.sha256)) fail("datasheet SHA-256");
-    if (
-      typeof a.dataURL !== "string" ||
-      !/^data:application\/pdf;base64,[A-Za-z0-9+/=]+$/.test(a.dataURL)
-    )
-      fail("embedded PDF data");
-  }
-  const attachmentIds = new Set(d.attachments.map((a) => a.id));
-  for (const c of d.components)
-    if (c.datasheetId !== undefined && !attachmentIds.has(c.datasheetId))
-      fail("missing datasheet reference");
   for (const t of d.traces) {
     id(t);
-    side(t);
-    num(t.width, "trace width", 0.001, 100000);
-    list(t.points, "trace vertices", 100000);
-    if (t.points.length < 2) fail("trace needs two points");
+    layer(t);
+    num(t.width, "trace width", 1e-9);
+    list(t.points, "trace points");
+    if (t.points.length < 2) fail("trace points");
     t.points.forEach(xy);
-    label(t);
   }
   for (const v of d.vias) {
     id(v);
     xy(v);
-    num(v.r, "via radius", 0.001, 100000);
-    num(v.hole, "via hole radius", 0.001, v.r);
-    label(v);
+    num(v.r, "via radius", 1e-9);
+    num(v.hole, "via hole", 0, v.r);
+    if (!layers.has(v.fromLayerId) || !layers.has(v.toLayerId) || v.fromLayerId === v.toLayerId)
+      fail("via span");
   }
-  const maxId = [...ids].reduce((max, id) => Math.max(max, id), 0);
-  num(d.nextId, "next ID", maxId + 1, Number.MAX_SAFE_INTEGER);
+  for (const a of d.attachments) {
+    id(a);
+    str(a.name, "PDF name");
+    if (!/\.pdf$/i.test(a.name) || a.mime !== "application/pdf" || !/^[a-f0-9]{64}$/.test(a.sha256))
+      fail("PDF metadata");
+    num(a.size, "PDF size", 5, 67108864);
+  }
+  const attachments = new Set(d.attachments.map((a) => a.id));
+  for (const c of d.components)
+    if (c.datasheetId !== undefined && !attachments.has(c.datasheetId)) fail("datasheet reference");
+  for (const o of [...d.components.flatMap((c) => c.pins), ...d.traces, ...d.vias])
+    if (o.netName !== undefined) {
+      str(o.netName, "net name");
+      if (/[\x00-\x1f]/.test(o.netName)) fail("net name");
+    }
+  num(
+    d.nextId,
+    "next ID",
+    [...ids].reduce((m, n) => Math.max(m, n), 0) + 1,
+    Number.MAX_SAFE_INTEGER,
+  );
   if (!Number.isInteger(d.nextId)) fail("next ID");
-  delete d.app;
-  delete d.version;
-  return d;
-}
-
-// Conversion is deliberately limited. Never flatten multiple boards or discard
-// schematic/annotation data, inner copper, warped/remote photos or unknown pads.
-function migrateLegacy(raw) {
-  if (raw.app !== "pcb-reveng" || ![1, 2].includes(raw.version))
-    throw new Error("This is not a supported PCB RevEng project.");
-  const reject = (why) => {
-    throw new Error(
-      "This older project uses " +
-        why +
-        ". Open it in the original PCB RevEng; the original file has not been changed.",
-    );
+  const checkKeys = (o, keys) => {
+    for (const key of Object.keys(o)) if (!keys.includes(key)) fail("unsupported field " + key);
   };
-  if (raw.boards && raw.boards.length !== 1) reject("multiple boards");
-  const b = raw.boards?.[0] || raw;
-  if ((b.layerCount || raw.layerCount || 2) !== 2) reject("inner copper layers");
-  if (
-    (raw.xlinks || []).length ||
-    (b.schWires || []).length ||
-    (b.schLabels || []).length ||
-    (b.notes || []).length ||
-    (raw.bomColumns || []).length
-  )
-    reject("schematic, annotation, cross-board or custom BOM data");
-  const d = {
-    ...emptyDocument(),
-    name: b.name || "Imported board",
-    pxPerMm: raw.pxPerMm || 10,
-    calibrated: true,
+  if (d.calibration) checkKeys(d.calibration, ["boardUnitsPerMm"]);
+  for (const l of d.physicalLayers) checkKeys(l, ["id", "description"]);
+  for (const s of d.scans) {
+    checkKeys(s, [
+      "id",
+      "layerId",
+      "name",
+      "sourceName",
+      "width",
+      "height",
+      "tileSize",
+      "levels",
+      "flipX",
+      "flipY",
+      "aligned",
+      "transform",
+    ]);
+    checkKeys(s.transform, ["tx", "ty", "scale", "rotation"]);
+  }
+  for (const c of d.components) {
+    checkKeys(c, [
+      "id",
+      "ref",
+      "value",
+      "footprint",
+      "layerId",
+      "datasheetId",
+      "x",
+      "y",
+      "rot",
+      "body",
+      "pins",
+    ]);
+    checkKeys(c.body, ["x", "y", "w", "h", "shape"]);
+    for (const p of c.pins) {
+      checkKeys(p, ["num", "name", "x", "y", "w", "h", "shape", "tht", "hole", "netName"]);
+      if (p.shape === "circle" && p.tht !== false) num(p.hole, "visible drill", 0, p.w);
+    }
+  }
+  for (const t of d.traces) {
+    checkKeys(t, ["id", "layerId", "width", "points", "netName"]);
+    t.points.forEach((p) => checkKeys(p, ["x", "y"]));
+  }
+  for (const v of d.vias)
+    checkKeys(v, ["id", "x", "y", "r", "hole", "fromLayerId", "toLayerId", "netName"]);
+  for (const a of d.attachments) checkKeys(a, ["id", "name", "mime", "size", "sha256"]);
+  // Only the v2 schema is adopted; binary assets and transient views cannot sneak into state.
+  return {
+    name: d.name,
+    nextId: d.nextId,
+    calibration: d.calibration,
+    physicalLayers: d.physicalLayers,
+    scans: d.scans,
+    components: d.components,
+    traces: d.traces,
+    vias: d.vias,
+    attachments: d.attachments,
   };
-  const nets = new Map((raw.nets || []).map((n) => [n.id, n]));
-  // Retain labels on every legacy member: disconnected old assignments are then
-  // reported as duplicate names, never silently discarded or assumed connected.
-  const netName = (o) => (o.netId ? nets.get(o.netId)?.name || "LEGACY_" + o.netId : undefined);
-  d.components = (b.components || []).map((c) => {
-    if (
-      c.xlink ||
-      c.bom ||
-      Object.keys(c).some((k) => k.startsWith("sch")) ||
-      (c.part && c.value && c.part !== c.value)
-    )
-      reject("component schematic or custom metadata");
-    const fp = generateFootprint(c.fpId, c.fpParams);
-    if (!fp) reject("an unsupported footprint (" + c.fpId + ")");
-    if ((c.pins || []).length !== fp.pins.length) reject("inconsistent pad geometry");
-    return {
-      id: c.id,
-      ref: c.ref,
-      value: c.value || c.part || "",
-      footprint: fp.label,
-      x: c.x,
-      y: c.y,
-      rot: c.rot || 0,
-      scale: c.scale || 1,
-      side: c.side,
-      body: fp.body,
-      pins: c.pins.map((p, i) => {
-        if (p.nc) reject("explicit no-connect pads");
-        const f = fp.pins.find((f) => String(f.num) === String(p.num));
-        if (!f) reject("unknown pin numbers");
-        return { ...f, num: String(p.num), name: p.name || f.name || "", netName: netName(p) };
-      }),
-    };
-  });
-  d.traces = (b.traces || []).map((t) => ({
-    id: t.id,
-    side: t.side,
-    width: t.width || raw.traceW || 5,
-    points: t.points,
-    netName: netName(t),
-  }));
-  d.vias = (b.vias || []).map((v) => {
-    if (v.from || v.to) reject("blind or buried vias");
-    return {
-      id: v.id,
-      x: v.x,
-      y: v.y,
-      r: v.r || raw.viaR || 5,
-      hole: v.hole || raw.viaHole || 2.5,
-      netName: netName(v),
-    };
-  });
-  d.layers = (b.layers || []).map((l) => {
-    if (l.warp || l.url || l.imgW || l.imgH) reject("warped, linked or downscaled photographs");
-    return {
-      id: l.id,
-      name: l.name,
-      side: l.side,
-      dataURL: l.dataURL,
-      tx: l.tx || 0,
-      ty: l.ty || 0,
-      scale: l.scale || 1,
-      rot: l.rot || 0,
-      mirror: !!l.mirror,
-      opacity: l.opacity ?? 1,
-      width: 1,
-      height: 1,
-    };
-  });
-  d.nextId =
-    Math.max(
-      0,
-      ...d.layers.concat(d.components, d.traces, d.vias, d.attachments).map((o) => o.id),
-    ) + 1;
-  return { app: "pcb-reveng-simple", version: 1, ...d };
 }

@@ -2,8 +2,8 @@
 
 function exportBOM() {
   return _toCSV([
-    ["Reference", "Value", "Footprint", "Side"],
-    ...State.components.map((c) => [c.ref, c.value, c.footprint, c.side]),
+    ["Reference", "Value", "Footprint", "Layer"],
+    ...State.components.map((c) => [c.ref, c.value, c.footprint, layerName(c.layerId)]),
   ]);
 }
 
@@ -44,7 +44,7 @@ function buildElectricalExportModel() {
         reference: c.ref,
         value: c.value,
         package: c.footprint,
-        side: c.side,
+        layer: layerName(c.layerId),
         pins: c.pins.map((p) => ({
           number: p.num,
           name: p.name || "",
@@ -68,8 +68,13 @@ function buildElectricalExportModel() {
     copperObjectCount: net.members.length,
   }));
   return {
-    schema: "pcb-reveng-ai-graph-v1",
+    schema: "pcb-reveng-ai-graph-v2",
     project: { name: State.name },
+    layers: State.physicalLayers.map((l, i) => ({
+      id: l.id,
+      index: i + 1,
+      description: l.description,
+    })),
     components,
     nets,
     warnings: [...Connectivity.issues],
@@ -103,6 +108,7 @@ function buildContextMarkdown(model) {
       "### " + markdownValue(c.reference) + " — " + markdownValue(c.value || c.package),
       "",
     );
+    lines.push("Layer: " + c.layer, "");
     if (c.datasheet) lines.push("Datasheet: " + markdownValue(c.datasheet), "");
     lines.push("Pins:", "");
     if (!c.pins.length) lines.push("- None recorded.");
@@ -134,18 +140,71 @@ function buildContextMarkdown(model) {
   }
   return lines.join("\n");
 }
-function buildAIPackage() {
-  const model = buildElectricalExportModel();
-  const files = {
-    "context.md": fflate.strToU8(buildContextMarkdown(model)),
-    "graph.json": fflate.strToU8(buildGraphJSON(model)),
-  };
-  for (const [id, path] of model.datasheetPaths) {
-    const bytes = AttachmentAssets.get(id);
-    if (!bytes) throw new Error("A referenced datasheet is unavailable.");
-    files[path] = [bytes, { level: 0 }];
+async function exportAIPackage() {
+  if (!ProjectFile.root || ProjectFile.busy) return;
+  ProjectFile.busy = true;
+  refreshSaveState();
+  let writable;
+  try {
+    const model = buildElectricalExportModel(),
+      root = ProjectFile.root;
+    const stem = State.name.replace(/[\\/\x00-\x1f\x7f]/g, "_").trim() || "Untitled board";
+    const handle = await window.showSaveFilePicker({
+      suggestedName: stem + "-AI.zip",
+      types: [{ description: "AI analysis package", accept: { "application/zip": [".zip"] } }],
+    });
+    writable = await handle.createWritable();
+    let writes = Promise.resolve(),
+      failure = null;
+    const zip = new fflate.Zip((error, chunk) => {
+      if (error) {
+        failure = error;
+        return;
+      }
+      writes = writes.then(() => writable.write(chunk));
+    });
+    const addText = async (name, text) => {
+      const entry = new fflate.ZipDeflate(name, { level: 6 });
+      zip.add(entry);
+      entry.push(fflate.strToU8(text), true);
+      await writes;
+      if (failure) throw failure;
+    };
+    await addText("context.md", buildContextMarkdown(model));
+    await addText("graph.json", buildGraphJSON(model));
+    for (const [id, path] of model.datasheetPaths) {
+      const attachment = State.attachments.find((a) => a.id === id),
+        file = await pdfFile(attachment, root),
+        entry = new fflate.ZipPassThrough(path);
+      zip.add(entry);
+      const reader = file.stream().getReader();
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          entry.push(value, false);
+          await writes;
+          if (failure) throw failure;
+        }
+      } finally {
+        reader.releaseLock();
+      }
+      entry.push(new Uint8Array(), true);
+      await writes;
+    }
+    zip.end();
+    await writes;
+    if (failure) throw failure;
+    await writable.close();
+    writable = null;
+    notify("Saved " + stem + "-AI.zip");
+  } catch (e) {
+    if (writable) await writable.abort().catch(() => {});
+    if (e.name !== "AbortError") notify("AI export failed: " + e.message, true);
+  } finally {
+    ProjectFile.busy = false;
+    refreshSaveState();
   }
-  return { model, zip: fflate.zipSync(files, { level: 6 }) };
 }
 function downloadExport(blob, name) {
   const a = document.createElement("a"),
@@ -161,10 +220,7 @@ function exportFile(kind) {
       downloadExport(new Blob([exportBOM()], { type: "text/csv" }), State.name + "-BOM.csv");
       notify("Exported BOM.");
     } else if (kind === "ai") {
-      const { zip } = buildAIPackage();
-      const stem = State.name.replace(/[\\/\x00-\x1f\x7f]/g, "_").trim() || "Untitled board";
-      downloadExport(new Blob([zip], { type: "application/zip" }), stem + "-AI.zip");
-      notify("Exported AI package.");
+      return exportAIPackage();
     }
   } catch (err) {
     notify("Export failed: " + err.message, true);

@@ -32,18 +32,9 @@ function componentParams() {
   return Editor.params;
 }
 function componentPreview() {
-  const pkg = PACKAGES[Editor.package],
-    fp = generateFootprint(pkg.id, componentParams());
-  Editor.preview = normalizeComponentGeometry({
-    id: 0,
-    ref: nextRef(pkg.prefix),
-    value: "",
-    body: fp.body,
-    pins: fp.pins,
-    footprint: fp.label,
-    rot: 0,
-    side: View.drawSide,
-  });
+  const pkg = PACKAGES[Editor.package];
+  const c = makeComponent(pkg.id, componentParams(), 0, 0, pkg.prefix, View.activeLayerId, true);
+  Editor.preview = c;
   requestRender();
 }
 function setTool(tool) {
@@ -64,23 +55,14 @@ function setTool(tool) {
   updateHint();
   requestRender();
 }
-function setView(side) {
-  if (Editor.trace.length && side !== "both" && side !== View.drawSide) finishTrace();
-  View.side = side;
-  if (side !== "both") View.drawSide = side;
-  document.getElementById("draw-side").value = View.drawSide;
-  document.querySelectorAll("[data-view]").forEach((b) => {
-    b.classList.toggle("active", b.dataset.view === side);
-    b.setAttribute("aria-pressed", String(b.dataset.view === side));
-  });
-  requestRender();
-}
 function afterEdit(inspector = true) {
   rebuildConnectivity();
   refreshSaveState();
-  syncPhotoControls();
+  normalizeView();
+  renderLayers();
+  syncViewControls();
   document.getElementById("empty-state").hidden = !!(
-    State.layers.length ||
+    State.scans.length ||
     State.components.length ||
     State.traces.length ||
     State.vias.length
@@ -90,6 +72,7 @@ function afterEdit(inspector = true) {
   requestRender();
 }
 function change(fn) {
+  if (ProjectFile.busy || !ProjectFile.root) return false;
   try {
     editDocument(fn);
     afterEdit();
@@ -129,7 +112,7 @@ function marqueeSelection(a, b) {
     box = bounds([a, b]);
   if (View.components)
     for (const c of State.components) {
-      if (sideVisible(c.side) && cornersContained(box, bodyCornersWorld(c)))
+      if (layerVisible(c.layerId) && cornersContained(box, bodyCornersWorld(c)))
         items.push({ type: "component", object: c });
       else
         c.pins.forEach((p, index) => {
@@ -148,16 +131,17 @@ function anchorsFor(selection) {
       locations.push({
         before: pinWorldPos(o, p),
         after: () => pinWorldPos(o, p),
-        side: through(p) ? null : o.side,
+        layers: [o.layerId],
       });
-    if (s.type === "via") locations.push({ before: { x: o.x, y: o.y }, after: () => o });
+    if (s.type === "via")
+      locations.push({ before: { x: o.x, y: o.y }, after: () => o, layers: viaLayerIds(o) });
   }
   const anchors = [];
   for (const t of State.traces)
-    for (const point of t.points) {
+    for (const point of [t.points[0], t.points.at(-1)]) {
       const loc = locations.find(
         (loc) =>
-          (!loc.side || loc.side === t.side) &&
+          loc.layers.includes(t.layerId) &&
           Math.hypot(point.x - loc.before.x, point.y - loc.before.y) < 1e-5,
       );
       if (loc) anchors.push({ point, after: loc.after });
@@ -185,8 +169,8 @@ function finishTrace() {
     change(() =>
       State.traces.push({
         id: nextId(),
-        side: View.drawSide,
-        width: Editor.traceWidth * State.pxPerMm,
+        layerId: View.activeLayerId,
+        width: Editor.traceWidth * 1,
         points,
       }),
     );
@@ -197,7 +181,31 @@ function finishTrace() {
   requestRender();
 }
 function deleteSelected() {
-  if (Editor.drag) return;
+  if (Editor.drag || ProjectFile.busy || !ProjectFile.root) return;
+  const special = Editor.selection;
+  if (special?.type === "scan") {
+    if (confirm("Delete this scan? Reconstructed copper is retained.")) {
+      Editor.selection = null;
+      change(() => (State.scans = State.scans.filter((s) => s.id !== special.object.id)));
+    }
+    return;
+  }
+  if (special?.type === "physicalLayer") {
+    if (
+      confirm(
+        "Delete this physical layer and its scans, components and traces? Affected vias will be adjusted or removed.",
+      )
+    ) {
+      try {
+        deletePhysicalLayer(special.object.id);
+        Editor.selection = null;
+        afterEdit();
+      } catch (e) {
+        notify(e.message, true);
+      }
+    }
+    return;
+  }
   const items = selectionItems(canonicalSelection(selectionItems()));
   if (!items.length) return;
   // Higher pad indices are removed first so remaining selections stay valid.
@@ -208,7 +216,7 @@ function deleteSelected() {
       else if (s.type === "trace" && s.vertex !== undefined && s.object.points.length > 2)
         s.object.points.splice(s.vertex, 1);
       else {
-        const key = { component: "components", trace: "traces", via: "vias", image: "layers" }[
+        const key = { component: "components", trace: "traces", via: "vias", scan: "scans" }[
           s.type
         ];
         State[key] = State[key].filter((o) => o.id !== s.object.id);
@@ -253,11 +261,14 @@ function copySelected() {
   const box = bounds(entries.map((entry) => entry.position));
   Editor.clipboard = {
     entries,
+    attachments: State.attachments
+      .filter((a) => entries.some((e) => e.type === "component" && e.data.datasheetId === a.id))
+      .map((a) => ({ ...a })),
     origin: { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 },
   };
 }
 function pasteClipboard() {
-  if (Editor.drag || !Editor.clipboard) return;
+  if (Editor.drag || ProjectFile.busy || !Editor.clipboard) return;
   const { entries, origin } = Editor.clipboard;
   const dx = Editor.cursor.x - origin.x,
     dy = Editor.cursor.y - origin.y;
@@ -268,14 +279,22 @@ function pasteClipboard() {
       const data = structuredClone(entry.data);
       const point = { x: entry.position.x + dx, y: entry.position.y + dy };
       if (entry.type === "component") {
+        if (
+          data.datasheetId !== undefined &&
+          !State.attachments.some((a) => a.id === data.datasheetId)
+        ) {
+          const attachment = Editor.clipboard.attachments.find((a) => a.id === data.datasheetId);
+          if (attachment) State.attachments.push({ ...attachment });
+          else delete data.datasheetId;
+        }
         Object.assign(data, point, { id: nextId(), ref: nextRef(entry.prefix) });
         State.components.push(data);
         items.push({ type: "component", object: data });
       } else {
         const c = State.components.find((c) => c.id === entry.parentId);
         if (!c) continue;
-        const q = compWorldToMm(c, point.x, point.y);
-        Object.assign(data, { num: nextPinNumber(c), xmm: q.x, ymm: q.y });
+        const q = worldToLocal(c, point.x, point.y);
+        Object.assign(data, { num: nextPinNumber(c), x: q.x, y: q.y });
         c.pins.push(data);
         items.push({ type: "pad", object: c, index: c.pins.length - 1 });
       }
@@ -284,6 +303,7 @@ function pasteClipboard() {
   });
 }
 function runHistory(redoIt) {
+  if (ProjectFile.busy) return;
   if (Editor.drag) cancelDrag();
   Editor.trace = [];
   Editor.mode = null;
@@ -313,12 +333,10 @@ function updateCursor() {
   View.canvas.style.cursor =
     Editor.drag?.type === "pan"
       ? "grabbing"
-      : Editor.space
-        ? "grab"
-        : Editor.drag?.type === "resize"
-          ? Editor.drag.cursor
-          : resizeHandleAt(Editor.cursor)?.cursor ||
-            (Editor.tool === "select" ? "default" : "crosshair");
+      : Editor.drag?.type === "resize"
+        ? Editor.drag.cursor
+        : resizeHandleAt(Editor.cursor)?.cursor ||
+          (Editor.tool === "select" ? "default" : "crosshair");
 }
 function pointerDown(e) {
   if (e.button !== 0 && e.button !== 1) return;
@@ -333,6 +351,7 @@ function pointerDown(e) {
     updateCursor();
     return;
   }
+  if (ProjectFile.busy || !ProjectFile.root) return;
   const handle = resizeHandleAt(p);
   if (handle) {
     const s = Editor.selection,
@@ -343,9 +362,9 @@ function pointerDown(e) {
       type: "resize",
       selection: s,
       cornerIndex: handle.cornerIndex,
-      anchorLocal: compWorldToMm(o, opposite.x, opposite.y),
+      anchorLocal: worldToLocal(o, opposite.x, opposite.y),
       original: structuredClone(pad || o.body),
-      minimum: pad && through(pad) ? Math.max(0.01, pad.hole + 0.1) : 0.01,
+      minimum: pad && hasDrill(pad) ? Math.max(0.01, pad.hole + 0.1) : 0.01,
       anchors: pad ? anchorsFor(s) : [],
       before: snapshot(),
       start: p,
@@ -362,16 +381,16 @@ function pointerDown(e) {
   }
   if (Editor.padTarget) {
     const c = Editor.padTarget,
-      q = compWorldToMm(c, p.x, p.y);
+      q = worldToLocal(c, p.x, p.y);
     const num = nextPinNumber(c);
     change(() => {
       c.pins.push({
         num,
         name: "",
-        xmm: q.x,
-        ymm: q.y,
-        w: 1.5,
-        h: 1.5,
+        x: q.x,
+        y: q.y,
+        w: 15,
+        h: 15,
         shape: "rect",
         tht: false,
       });
@@ -385,21 +404,27 @@ function pointerDown(e) {
     const pkg = PACKAGES[Editor.package];
     change(() => {
       const c = makeComponent(pkg.id, componentParams(), p.x, p.y, pkg.prefix);
-      c.side = View.drawSide;
+      c.layerId = View.activeLayerId;
       State.components.push(c);
     });
     componentPreview();
     return;
   }
   if (Editor.tool === "via") {
+    if (State.physicalLayers.length < 2) {
+      notify("Add another physical layer before placing a via.", true);
+      return;
+    }
     const q = snapPoint(p, true) || p;
     change(() =>
       State.vias.push({
         id: nextId(),
         x: q.x,
         y: q.y,
-        r: (Editor.viaDiameter * State.pxPerMm) / 2,
-        hole: (Editor.viaHole * State.pxPerMm) / 2,
+        r: (Editor.viaDiameter * 1) / 2,
+        hole: Editor.viaHole / 2,
+        fromLayerId: View.activeLayerId,
+        toLayerId: defaultViaEnd(),
       }),
     );
     return;
@@ -459,7 +484,7 @@ function pointerMove(e) {
     p = screenToWorld(pos.x, pos.y);
   Editor.cursor = p;
   document.getElementById("coordinates").textContent =
-    (p.x / State.pxPerMm).toFixed(2) + ", " + (p.y / State.pxPerMm).toFixed(2) + " mm";
+    formatDistance(p.x) + ", " + formatDistance(p.y);
   const d = Editor.drag;
   if (d?.type === "pan") {
     View.panX = d.x + pos.x - d.start.x;
@@ -514,17 +539,14 @@ function moveSelectionRecords(records, dx, dy, pointer) {
       o = s.object,
       orig = record.original;
     if (s.type === "pad") {
-      const q = compWorldToMm(o, record.padPosition.x + dx, record.padPosition.y + dy);
-      o.pins[s.index].xmm = q.x;
-      o.pins[s.index].ymm = q.y;
+      const q = worldToLocal(o, record.padPosition.x + dx, record.padPosition.y + dy);
+      o.pins[s.index].x = q.x;
+      o.pins[s.index].y = q.y;
     } else if (s.type === "trace") {
       if (s.vertex !== undefined) {
         const q = snapPoint(pointer, false, o) || pointer;
         o.points[s.vertex] = { x: q.x, y: q.y };
       } else o.points = orig.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
-    } else if (s.type === "image") {
-      o.tx = orig.tx + dx;
-      o.ty = orig.ty + dy;
     } else {
       o.x = orig.x + dx;
       o.y = orig.y + dy;
@@ -566,19 +588,8 @@ function insertTraceVertex(e) {
     });
 }
 function startMeasure(kind) {
-  if (kind === "align" && !["front", "back"].every((s) => State.layers.some((l) => l.side === s))) {
-    notify("Add both photographs before aligning them.", true);
-    return;
-  }
   Editor.selection = null;
-  Editor.mode =
-    kind === "align"
-      ? { kind, target: [], source: [], previousSide: View.side }
-      : { kind, points: [] };
-  if (kind === "align") {
-    setView("front");
-    fitBoard();
-  }
+  Editor.mode = { kind, points: [] };
   renderInspector();
   updateHint();
   requestRender();
@@ -586,19 +597,24 @@ function startMeasure(kind) {
 function recordMeasurePoint(p) {
   const m = Editor.mode;
   if (m.kind === "align") {
-    if (m.target.length < 2) {
-      m.target.push(p);
-      if (m.target.length === 2) {
-        setView("back");
-        fitBoard();
-      }
-    } else if (m.source.length < 2)
-      m.source.push(
+    if (m.phase === "reference" && m.referencePoints.length < m.count) m.referencePoints.push(p);
+    else if (m.phase === "target" && m.sourcePoints.length < m.count)
+      m.sourcePoints.push(
         worldToImage(
-          State.layers.find((l) => l.side === "back"),
+          State.scans.find((s) => s.id === m.targetId),
           p,
         ),
       );
+    if (m.phase === "target" && m.sourcePoints.length === m.count) {
+      try {
+        const scan = State.scans.find((s) => s.id === m.targetId);
+        m.fit = fitSimilarity(scan, m.sourcePoints, m.referencePoints);
+        m.phase = "preview";
+        View.blend = 0.5;
+      } catch (e) {
+        notify(e.message, true);
+      }
+    }
   } else if (m.points.length < 2) m.points.push(p);
   renderInspector();
   updateHint();
@@ -607,25 +623,22 @@ function recordMeasurePoint(p) {
 function updateHint() {
   let text = {
     select: "Drag empty space to select · Ctrl/Cmd+C copy · Ctrl/Cmd+V paste · Space + drag to pan",
-    component: "Choose a package, then click to place · Escape returns to Select",
-    trace: "Click pads or copper to trace · Click to add corners · Enter finishes · Escape cancels",
-    via: "Click to place a via connecting front and back copper",
-    measure: "Choose Measure, Set scale or Align photos in the properties panel",
+    component: "Choose a package, then click to place",
+    trace: "Click copper to trace · Enter finishes · Escape cancels",
+    via: "Click to place one via across its physical layer span",
+    measure: "Measure or optionally calibrate board units",
   }[Editor.tool];
-  if (Editor.padTarget) text = "Click on the photograph to add a pad to " + Editor.padTarget.ref;
-  if (Editor.mode) {
-    const m = Editor.mode;
+  if (Editor.padTarget) text = "Click to add a pad to " + Editor.padTarget.ref;
+  const m = Editor.mode;
+  if (m)
     text =
       m.kind === "align"
-        ? m.target.length < 2
-          ? "FRONT: click reference point " + (m.target.length + 1) + " of 2"
-          : m.source.length < 2
-            ? "BACK: click the SAME reference point " + (m.source.length + 1) + " of 2"
-            : "Review the points, then apply alignment"
-        : m.points.length < 2
-          ? "Click point " + (m.points.length + 1) + " of 2 on the photograph"
-          : "Read the measurement or enter the known distance in the properties panel";
-  }
+        ? m.phase === "reference"
+          ? "Reference landmarks: " + m.referencePoints.length + " / " + m.count
+          : m.phase === "target"
+            ? "Target landmarks in the same order: " + m.sourcePoints.length + " / " + m.count
+            : "Preview alignment, then Apply or Redo"
+        : "Choose two points on the board";
   document.getElementById("canvas-hint").textContent = text;
 }
 function wireCanvas() {
@@ -641,6 +654,10 @@ function wireCanvas() {
     (e) => {
       e.preventDefault();
       const p = canvasPos(e);
+      if (Editor.space) {
+        cycleScan(e.deltaY > 0 ? 1 : -1);
+        return;
+      }
       zoomAt(p.x, p.y, Math.exp(-e.deltaY * 0.001));
     },
     { passive: false },

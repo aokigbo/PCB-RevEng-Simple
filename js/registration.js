@@ -1,34 +1,70 @@
 "use strict";
-
-function imageToWorld(l, p) {
-  const x = (l.mirror ? -p.x : p.x) * l.scale,
-    y = p.y * l.scale,
-    a = (l.rot * Math.PI) / 180;
+function imageToWorld(scan, p) {
+  const t = scan.transform,
+    a = (t.rotation * Math.PI) / 180,
+    x = p.x * (scan.flipX ? -1 : 1) * t.scale,
+    y = p.y * (scan.flipY ? -1 : 1) * t.scale;
   return {
-    x: l.tx + x * Math.cos(a) - y * Math.sin(a),
-    y: l.ty + x * Math.sin(a) + y * Math.cos(a),
+    x: t.tx + x * Math.cos(a) - y * Math.sin(a),
+    y: t.ty + x * Math.sin(a) + y * Math.cos(a),
   };
 }
-function worldToImage(l, p) {
-  const a = (-l.rot * Math.PI) / 180,
-    x = p.x - l.tx,
-    y = p.y - l.ty;
+function worldToImage(scan, p) {
+  const t = scan.transform,
+    a = (-t.rotation * Math.PI) / 180,
+    x = p.x - t.tx,
+    y = p.y - t.ty;
   return {
-    x: ((x * Math.cos(a) - y * Math.sin(a)) / l.scale) * (l.mirror ? -1 : 1),
-    y: (x * Math.sin(a) + y * Math.cos(a)) / l.scale,
+    x: ((x * Math.cos(a) - y * Math.sin(a)) / t.scale) * (scan.flipX ? -1 : 1),
+    y: ((x * Math.sin(a) + y * Math.cos(a)) / t.scale) * (scan.flipY ? -1 : 1),
   };
 }
-function alignImage(layer, source, target) {
-  const s = source.map((p) => ({ x: layer.mirror ? -p.x : p.x, y: p.y }));
-  const dx = s[1].x - s[0].x,
-    dy = s[1].y - s[0].y,
-    tx = target[1].x - target[0].x,
-    ty = target[1].y - target[0].y;
-  if (Math.hypot(dx, dy) < 2 || Math.hypot(tx, ty) < 2)
-    throw new Error("Choose two distinct reference points, farther apart.");
-  layer.scale = Math.hypot(tx, ty) / Math.hypot(dx, dy);
-  layer.rot = ((Math.atan2(ty, tx) - Math.atan2(dy, dx)) * 180) / Math.PI;
-  const a = (layer.rot * Math.PI) / 180;
-  layer.tx = target[0].x - layer.scale * (s[0].x * Math.cos(a) - s[0].y * Math.sin(a));
-  layer.ty = target[0].y - layer.scale * (s[0].x * Math.sin(a) + s[0].y * Math.cos(a));
+function fitSimilarity(scan, source, target) {
+  if (source.length < 3 || source.length > 5 || source.length !== target.length)
+    throw new Error("Choose 3–5 matching point pairs.");
+  const s = source.map((p) => ({ x: p.x * (scan.flipX ? -1 : 1), y: p.y * (scan.flipY ? -1 : 1) }));
+  const mean = (ps) => ({
+    x: ps.reduce((n, p) => n + p.x, 0) / ps.length,
+    y: ps.reduce((n, p) => n + p.y, 0) / ps.length,
+  });
+  const a = mean(s),
+    b = mean(target);
+  let dot = 0,
+    cross = 0,
+    den = 0;
+  s.forEach((p, i) => {
+    const x = p.x - a.x,
+      y = p.y - a.y,
+      u = target[i].x - b.x,
+      v = target[i].y - b.y;
+    dot += x * u + y * v;
+    cross += x * v - y * u;
+    den += x * x + y * y;
+  });
+  if (den < 1e-12 || Math.hypot(dot, cross) < 1e-12)
+    throw new Error("Landmarks must be distinct and spread across the board.");
+  const A = dot / den,
+    B = cross / den,
+    transform = {
+      tx: b.x - A * a.x + B * a.y,
+      ty: b.y - B * a.x - A * a.y,
+      scale: Math.hypot(A, B),
+      rotation: (Math.atan2(B, A) * 180) / Math.PI,
+    };
+  const fitted = { ...scan, transform };
+  const rms = Math.sqrt(
+    source.reduce((sum, p, i) => {
+      const q = imageToWorld(fitted, p);
+      return sum + (q.x - target[i].x) ** 2 + (q.y - target[i].y) ** 2;
+    }, 0) / source.length,
+  );
+  return { transform, rms };
+}
+function flipScan(scan, axis) {
+  const center = imageToWorld(scan, { x: scan.width / 2, y: scan.height / 2 });
+  scan[axis] = !scan[axis];
+  const after = imageToWorld(scan, { x: scan.width / 2, y: scan.height / 2 });
+  scan.transform.tx += center.x - after.x;
+  scan.transform.ty += center.y - after.y;
+  scan.aligned = false;
 }

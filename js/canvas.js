@@ -8,8 +8,11 @@ const View = {
   zoom: 1,
   panX: 0,
   panY: 0,
-  side: "front",
-  drawSide: "front",
+  activeLayerId: 1,
+  primaryByLayer: new Map(),
+  comparisonId: null,
+  blend: 0.5,
+  drawingOpacity: 1,
   grid: false,
   components: true,
   traces: true,
@@ -20,9 +23,9 @@ const Editor = {
   selection: null,
   cursor: { x: 0, y: 0 },
   trace: [],
-  traceWidth: 0.5,
-  viaDiameter: 1,
-  viaHole: 0.5,
+  traceWidth: 5,
+  viaDiameter: 10,
+  viaHole: 5,
   drag: null,
   space: false,
   mode: null,
@@ -40,11 +43,11 @@ function worldToScreen(x, y) {
 function screenToWorld(x, y) {
   return { x: (x - View.panX) / View.zoom, y: (y - View.panY) / View.zoom };
 }
-function sideVisible(side) {
-  return View.side === "both" || View.side === side;
+function layerVisible(id) {
+  return View.activeLayerId === id;
 }
 function padVisible(c, p) {
-  return View.components && (sideVisible(c.side) || through(p));
+  return View.components && layerVisible(c.layerId);
 }
 function selectedKey() {
   const s = Editor.selection;
@@ -62,7 +65,12 @@ function netColor(key, side) {
     chosen = Connectivity.byKey.get(selectedKey());
   if (net?.conflict) return "#ff8d75";
   if (chosen && net === chosen) return "#ffe291";
-  return side === "back" ? "#78b9ff" : "#eea888";
+  return ["#eea888", "#78b9ff", "#b6d584", "#ce9feb"][
+    Math.max(
+      0,
+      State.physicalLayers.findIndex((l) => l.id === side),
+    ) % 4
+  ];
 }
 let renderPending = false;
 function requestRender() {
@@ -88,33 +96,34 @@ function resizeCanvas() {
 }
 function zoomAt(sx, sy, factor) {
   const p = screenToWorld(sx, sy);
-  View.zoom = Math.max(0.01, Math.min(40, View.zoom * factor));
+  View.zoom = Math.max(0.000001, Math.min(64, View.zoom * factor));
   View.panX = sx - p.x * View.zoom;
   View.panY = sy - p.y * View.zoom;
   requestRender();
 }
 function fitBoard() {
   const points = [];
-  for (const l of State.layers)
-    if (sideVisible(l.side))
-      for (const p of [
-        { x: 0, y: 0 },
-        { x: l.width, y: 0 },
-        { x: 0, y: l.height },
-        { x: l.width, y: l.height },
-      ])
-        points.push(imageToWorld(l, p));
+  for (const l of visibleScans())
+    for (const p of [
+      { x: 0, y: 0 },
+      { x: l.width, y: 0 },
+      { x: 0, y: l.height },
+      { x: l.width, y: l.height },
+    ])
+      points.push(imageToWorld(l, p));
   for (const c of State.components) {
+    if (!layerVisible(c.layerId)) continue;
     const r = compRadius(c);
     points.push({ x: c.x - r, y: c.y - r }, { x: c.x + r, y: c.y + r });
   }
-  for (const t of State.traces) points.push(...t.points);
+  for (const t of State.traces) if (layerVisible(t.layerId)) points.push(...t.points);
   for (const v of State.vias)
-    points.push({ x: v.x - v.r, y: v.y - v.r }, { x: v.x + v.r, y: v.y + v.r });
+    if (viaOnLayer(v, View.activeLayerId))
+      points.push({ x: v.x - v.r, y: v.y - v.r }, { x: v.x + v.r, y: v.y + v.r });
   if (points.length) {
     const b = bounds(points);
     View.zoom = Math.max(
-      0.01,
+      0.000001,
       Math.min(
         8,
         (View.width - 100) / Math.max(1, b.maxX - b.minX),
@@ -140,48 +149,43 @@ function pinDisplayLabel(pin) {
 function renderComponent(ctx, c, ghost = false) {
   const selected = selectionContains("component", c);
   const active = !isGroupSelection() && Editor.selection?.object === c;
-  const scale = State.pxPerMm;
+  const scale = 1;
   ctx.save();
   ctx.translate(c.x, c.y);
   ctx.rotate((c.rot * Math.PI) / 180);
-  ctx.scale(c.side === "back" ? -scale : scale, scale);
-  if (sideVisible(c.side)) {
+  ctx.scale(scale, scale);
+  if (layerVisible(c.layerId)) {
     ctx.strokeStyle = selected ? "#baf5df" : "#b7ccdbaa";
     ctx.fillStyle = selected ? "#42635640" : "#1b283940";
     ctx.lineWidth = 1.2 / View.zoom / scale;
     ctx.beginPath();
     if (c.body.shape === "circle")
-      ctx.ellipse(c.body.xmm || 0, c.body.ymm || 0, c.body.w / 2, c.body.h / 2, 0, 0, Math.PI * 2);
+      ctx.ellipse(c.body.x || 0, c.body.y || 0, c.body.w / 2, c.body.h / 2, 0, 0, Math.PI * 2);
     else
-      ctx.rect(
-        (c.body.xmm || 0) - c.body.w / 2,
-        (c.body.ymm || 0) - c.body.h / 2,
-        c.body.w,
-        c.body.h,
-      );
+      ctx.rect((c.body.x || 0) - c.body.w / 2, (c.body.y || 0) - c.body.h / 2, c.body.w, c.body.h);
     ctx.fill();
     ctx.stroke();
   }
   c.pins.forEach((p, i) => {
     if (!padVisible(c, p) && !ghost) return;
     const chosen = selectionContains("pad", c, i) || selected;
-    ctx.fillStyle = ghost ? "#87dabe99" : netColor(pinKey(c, p), c.side);
+    ctx.fillStyle = ghost ? "#87dabe99" : netColor(pinKey(c, p), c.layerId);
     ctx.strokeStyle = chosen ? "#e1fff5" : "#27333d";
     ctx.lineWidth = (chosen ? 2 : 0.7) / View.zoom / scale;
     ctx.beginPath();
-    if (p.shape === "circle") ctx.arc(p.xmm, p.ymm, p.w / 2, 0, Math.PI * 2);
-    else ctx.rect(p.xmm - p.w / 2, p.ymm - p.h / 2, p.w, p.h);
+    if (p.shape === "circle") ctx.arc(p.x, p.y, p.w / 2, 0, Math.PI * 2);
+    else ctx.rect(p.x - p.w / 2, p.y - p.h / 2, p.w, p.h);
     ctx.fill();
     ctx.stroke();
-    if (through(p)) {
+    if (hasDrill(p)) {
       ctx.fillStyle = "#111820";
       ctx.beginPath();
-      ctx.arc(p.xmm, p.ymm, p.hole / 2, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, p.hole / 2, 0, Math.PI * 2);
       ctx.fill();
     }
   });
   ctx.restore();
-  if (sideVisible(c.side)) {
+  if (layerVisible(c.layerId)) {
     const box = compBoxHalf(c);
     ctx.font = 12 / View.zoom + "px system-ui";
     ctx.textAlign = "center";
@@ -207,22 +211,19 @@ function renderCanvas() {
   ctx.save();
   ctx.translate(View.panX, View.panY);
   ctx.scale(View.zoom, View.zoom);
-  for (const l of [...State.layers].sort((a, b) =>
-    a.side === b.side ? 0 : a.side === "front" ? -1 : 1,
-  )) {
-    if (!sideVisible(l.side)) continue;
-    const asset = ImageAssets.get(l.assetId);
-    if (!asset) continue;
-    ctx.save();
-    ctx.globalAlpha = l.opacity;
-    ctx.translate(l.tx, l.ty);
-    ctx.rotate((l.rot * Math.PI) / 180);
-    ctx.scale(l.scale * (l.mirror ? -1 : 1), l.scale);
-    ctx.drawImage(asset.img, 0, 0);
-    ctx.restore();
-  }
+  const scans = visibleScans(),
+    specs = scans.map((scan) => visibleTileSpecs(scan));
+  Tiles.view(specs.flat());
+  scans.forEach((scan, i) =>
+    renderScanTiles(
+      ctx,
+      scan,
+      scans.length === 1 ? 1 : i === 0 ? 1 - View.blend : View.blend,
+      specs[i],
+    ),
+  );
   if (View.grid) {
-    const step = State.pxPerMm,
+    const step = State.calibration?.boardUnitsPerMm || 100,
       tl = screenToWorld(0, 0),
       br = screenToWorld(View.width, View.height);
     if (step * View.zoom >= 8) {
@@ -232,15 +233,17 @@ function renderCanvas() {
           ctx.fillRect(x, y, 1 / View.zoom, 1 / View.zoom);
     }
   }
+  ctx.save();
+  ctx.globalAlpha = View.drawingOpacity;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
   if (View.traces)
     for (const t of State.traces) {
-      if (!sideVisible(t.side)) continue;
+      if (!layerVisible(t.layerId)) continue;
       const selected = Editor.selection?.object === t;
       pathTrace(ctx, t.points);
       ctx.lineWidth = t.width;
-      ctx.strokeStyle = netColor("t" + t.id, t.side);
+      ctx.strokeStyle = netColor("t" + t.id, t.layerId);
       ctx.stroke();
       if (selected) {
         pathTrace(ctx, t.points);
@@ -256,7 +259,8 @@ function renderCanvas() {
   if (View.components) for (const c of State.components) renderComponent(ctx, c);
   if (View.vias)
     for (const v of State.vias) {
-      ctx.fillStyle = netColor("v" + v.id, "front");
+      if (!viaOnLayer(v, View.activeLayerId)) continue;
+      ctx.fillStyle = netColor("v" + v.id, View.activeLayerId);
       ctx.beginPath();
       ctx.arc(v.x, v.y, v.r, 0, Math.PI * 2);
       ctx.fill();
@@ -272,6 +276,7 @@ function renderCanvas() {
         ctx.stroke();
       }
     }
+  ctx.restore();
   if (Editor.drag?.type === "marquee" && Editor.drag.moved) {
     const box = bounds([Editor.drag.start, Editor.drag.end]);
     ctx.fillStyle = "#baf5df10";
@@ -295,7 +300,7 @@ function renderCanvas() {
     ctx.globalAlpha = 0.7;
     renderComponent(
       ctx,
-      { ...Editor.preview, x: Editor.cursor.x, y: Editor.cursor.y, side: View.drawSide },
+      { ...Editor.preview, x: Editor.cursor.x, y: Editor.cursor.y, layerId: View.activeLayerId },
       true,
     );
     ctx.globalAlpha = 1;
@@ -304,7 +309,7 @@ function renderCanvas() {
     const p = Editor.snap || Editor.cursor;
     pathTrace(ctx, [...Editor.trace, p]);
     ctx.strokeStyle = "#b2edcd";
-    ctx.lineWidth = Editor.traceWidth * State.pxPerMm;
+    ctx.lineWidth = Editor.traceWidth * 1;
     ctx.stroke();
   }
   if (Editor.snap) {
@@ -318,16 +323,14 @@ function renderCanvas() {
   if (mode) {
     const points =
       mode.kind === "align"
-        ? mode.target.length < 2
-          ? mode.target
-          : View.side === "front"
-            ? mode.target
-            : mode.source.map((p) =>
-                imageToWorld(
-                  State.layers.find((l) => l.side === "back"),
-                  p,
-                ),
-              )
+        ? mode.phase === "reference"
+          ? mode.referencePoints
+          : mode.sourcePoints.map((p) =>
+              imageToWorld(
+                State.scans.find((s) => s.id === mode.targetId),
+                p,
+              ),
+            )
         : mode.points;
     ctx.strokeStyle = "#b4ffe3";
     ctx.fillStyle = "#d6ffef";
@@ -352,7 +355,7 @@ function selectionResizeCorners() {
   const s = Editor.selection;
   if (Editor.tool !== "select" || Editor.mode || Editor.padTarget || !View.components || !s)
     return [];
-  if (s.type === "component" && sideVisible(s.object.side)) return bodyCornersWorld(s.object);
+  if (s.type === "component" && layerVisible(s.object.layerId)) return bodyCornersWorld(s.object);
   if (s.type === "pad" && padVisible(s.object, s.object.pins[s.index]))
     return padCornersWorld(s.object, s.object.pins[s.index]);
   return [];
@@ -383,13 +386,14 @@ function resizeHandleAt(p) {
 function hitTest(p) {
   const tol = 5 / View.zoom,
     s = Editor.selection;
-  if (s?.type === "trace" && View.traces && sideVisible(s.object.side))
+  if (s?.type === "trace" && View.traces && layerVisible(s.object.layerId))
     for (let i = 0; i < s.object.points.length; i++)
       if (Math.hypot(p.x - s.object.points[i].x, p.y - s.object.points[i].y) < 7 / View.zoom)
         return { type: "trace", object: s.object, vertex: i };
   if (View.vias)
     for (const v of [...State.vias].reverse())
-      if (Math.hypot(p.x - v.x, p.y - v.y) <= v.r + tol) return { type: "via", object: v };
+      if (viaOnLayer(v, View.activeLayerId) && Math.hypot(p.x - v.x, p.y - v.y) <= v.r + tol)
+        return { type: "via", object: v };
   if (View.components)
     for (const c of [...State.components].reverse())
       for (let i = 0; i < c.pins.length; i++)
@@ -397,17 +401,14 @@ function hitTest(p) {
           return { type: "pad", object: c, index: i };
   if (View.traces)
     for (const t of [...State.traces].reverse())
-      if (sideVisible(t.side))
+      if (layerVisible(t.layerId))
         for (let i = 1; i < t.points.length; i++)
           if (distToSeg(p.x, p.y, t.points[i - 1], t.points[i]) <= t.width / 2 + tol)
             return { type: "trace", object: t };
   if (View.components)
     for (const c of [...State.components].reverse())
-      if (sideVisible(c.side) && pointInComp(c, p.x, p.y)) return { type: "component", object: c };
-  if (s?.type === "image" && sideVisible(s.object.side)) {
-    const q = worldToImage(s.object, p);
-    if (q.x >= 0 && q.y >= 0 && q.x <= s.object.width && q.y <= s.object.height) return s;
-  }
+      if (layerVisible(c.layerId) && pointInComp(c, p.x, p.y))
+        return { type: "component", object: c };
   return null;
 }
 function snapPoint(p, anySide = false, excludeTrace = null) {
@@ -422,15 +423,15 @@ function snapPoint(p, anySide = false, excludeTrace = null) {
   };
   for (const c of State.components)
     for (const pad of c.pins)
-      if (through(pad) || anySide || c.side === View.drawSide) {
+      if (c.layerId === View.activeLayerId) {
         const wp = pinWorldPos(c, pad);
         if (pinEdgeDist(c, pad, p.x, p.y) === 0) return wp;
         take(wp);
       }
-  for (const v of State.vias) take(v);
+  for (const v of State.vias) if (viaOnLayer(v, View.activeLayerId)) take(v);
   if (!best)
     for (const t of State.traces)
-      if (t !== excludeTrace && (anySide || t.side === View.drawSide))
+      if (t !== excludeTrace && t.layerId === View.activeLayerId)
         for (let i = 1; i < t.points.length; i++) {
           const q = projectOnSeg(p.x, p.y, t.points[i - 1], t.points[i]);
           if (q.d < dist) {

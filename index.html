@@ -23,7 +23,7 @@
         <span class="separator"></span>
         <button id="undo" title="Undo · Ctrl+Z" aria-label="Undo">↶</button>
         <button id="redo" title="Redo · Ctrl+Shift+Z" aria-label="Redo">↷</button>
-        <button id="save-as" title="Save As · Ctrl+Shift+S">Save As</button>
+        <button id="import-project">Import .pcbrev</button>
         <button id="save" class="primary" title="Save · Ctrl+S">Save</button>
         <details id="export-menu">
           <summary>Export <span>⌄</span></summary>
@@ -34,8 +34,7 @@
       </nav>
     </header>
     <div id="browser-notice" class="notice" hidden>
-      Direct project saving requires desktop Chrome or Edge on localhost or HTTPS. This browser
-      cannot save back to a project file.
+      Project folders require desktop Chrome or Edge on localhost or HTTPS.
     </div>
     <main>
       <nav id="tools" aria-label="Editing tools">
@@ -65,57 +64,55 @@
           aria-label="PCB editing canvas. Use the tools to place components, traces and vias."
         ></canvas>
         <div id="empty-state">
-          <div class="eyebrow">FROM PHOTOGRAPH TO CONNECTIVITY</div>
-          <h1>Start with your board.</h1>
-          <p>
-            Add a front or back photograph,<br />then measure a known distance to set the scale.
-          </p>
-          <div>
-            <button class="primary" data-import="front">Add front photo</button
-            ><button data-import="back">Add back photo</button>
-          </div>
-          <p class="subtle">Your work lives in a .pcbrev file you choose.</p>
+          <div class="eyebrow">PHYSICAL EVIDENCE → ELECTRICAL CONNECTIVITY</div>
+          <h1>One board. Every layer.</h1>
+          <p>Create or open a project folder.<br />Add scans, then reconstruct the copper.</p>
+          <p class="subtle">Scans stay on disk. Work stays in project.json.</p>
+        </div>
+        <div id="view-hud" role="status" hidden></div>
+        <div id="import-progress" hidden>
+          <span id="import-progress-text"></span><button id="cancel-import">Cancel import</button>
         </div>
         <div id="canvas-hint" role="status">
           Select an object to inspect it · Scroll to zoom · Space + drag to pan
         </div>
       </section>
-      <aside id="inspector" aria-label="Properties"></aside>
+      <aside id="sidebar">
+        <section id="layer-stack" aria-label="Physical layers"></section>
+        <section id="view-controls">
+          <h3>View</h3>
+          <label class="field"
+            ><span>Primary scan</span
+            ><select id="primary-scan" aria-label="Primary scan"></select></label
+          ><label class="field"
+            ><span>Comparison</span
+            ><select id="comparison-scan" aria-label="Comparison"></select></label
+          ><label class="field"
+            ><span>Blend</span
+            ><input
+              id="blend"
+              aria-label="Blend"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value="0.5" /></label
+          ><label class="field"
+            ><span>Drawing opacity</span
+            ><input
+              id="drawing-opacity"
+              aria-label="Drawing opacity"
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value="1"
+          /></label>
+        </section>
+        <section id="inspector" aria-label="Properties"></section>
+      </aside>
     </main>
     <footer>
-      <div class="segmented" aria-label="Board view">
-        <button data-view="front" class="active">Front</button><button data-view="back">Back</button
-        ><button data-view="both">Both</button>
-      </div>
-      <label
-        >Draw on
-        <select id="draw-side">
-          <option value="front">Front</option>
-          <option value="back">Back</option>
-        </select></label
-      >
-      <label class="opacity"
-        >Front
-        <input
-          id="front-opacity"
-          aria-label="Front photo opacity"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value="1"
-      /></label>
-      <label class="opacity"
-        >Back
-        <input
-          id="back-opacity"
-          aria-label="Back photo opacity"
-          type="range"
-          min="0"
-          max="1"
-          step="0.05"
-          value="0.5"
-      /></label>
       <details id="visibility-menu">
         <summary>Show</summary>
         <div class="menu above">
@@ -129,9 +126,12 @@
       ><span id="coordinates">0.00, 0.00 mm</span>
     </footer>
     <div id="toast" role="status" hidden></div>
-    <input type="file" id="photo-input" accept="image/png,image/jpeg,image/webp" hidden />
+    <input type="file" id="scan-input" accept=".tif,.tiff,image/tiff,image/png,image/jpeg" hidden />
+    <input type="file" id="project-input" accept=".pcbrev,.json" hidden />
     <script src="js/catalog.js"></script>
+    <script src="js/image-pyramid.js"></script>
     <script src="js/document.js"></script>
+    <script src="js/legacy-import.js"></script>
     <script src="js/geometry.js"></script>
     <script src="js/connectivity.js"></script>
     <script src="js/registration.js"></script>
@@ -139,6 +139,7 @@
     <script src="js/files.js"></script>
     <script src="vendor/fflate-0.8.3.js"></script>
     <script src="js/export.js"></script>
+    <script src="js/tile-cache.js"></script>
     <script src="js/canvas.js"></script>
     <script src="js/editor.js"></script>
     <script src="js/workspace.js"></script>

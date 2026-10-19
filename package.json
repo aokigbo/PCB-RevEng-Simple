@@ -1,8 +1,8 @@
 {
   "name": "pcb-reveng-simple",
   "private": true,
-  "version": "1.0.0",
-  "description": "A focused, file-based PCB reverse engineering workspace",
+  "version": "2.0.0",
+  "description": "Multilayer PCB connectivity reconstruction with disk-backed tiled scans",
   "scripts": {
     "test": "node --test tests/*.test.cjs",
     "start": "python3 -m http.server 8080 --bind 127.0.0.1",

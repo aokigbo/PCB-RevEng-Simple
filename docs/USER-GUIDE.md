@@ -1,121 +1,124 @@
-# A short guide
+# PCB inspection guide
 
-Start the app in desktop Chrome or Edge using localhost or HTTPS. Open an existing
-`.pcbrev` project, or add a board photograph to a new project. Work is saved only
-when you choose Save; there is no hidden browser project database.
+Run the app in desktop Chrome or Edge on localhost or HTTPS. New creates a project
+in a new empty folder. Open selects an existing project folder. Keep the folder's
+`project.json`, `images/` and `datasheets/` together when moving or backing it up.
+Save writes engineering edits; there is no browser autosave.
 
-## Photographs
+## Physical layers and scans
 
-Add the front and/or back of the board. The back photo is mirrored automatically
-so its copper shares the front's coordinate system. If your scan is already
-mirrored, select the back photo in Board setup and clear Mirror horizontally.
-Use Front / Back / Both and the opacity sliders along the bottom to inspect them.
-To reposition a photo, select it from Board setup and drag it. Its properties
-also provide rotation and scale. Do this before tracing: photos move independently
-of existing copper annotations.
+Physical layers describe actual PCB depth. L1/L2/L3 labels follow their order.
+Click a layer row to work there, use its ⋯ button to edit its description or delete
+it, and drag rows to reorder. Reordering asks before changing any via's physical
+span. Deleting a layer asks about the affected scans, components and traces; via
+spans are shortened or removed if fewer than two layers remain. Undo restores it.
 
-Choose Measure → Set scale, click two points with a known separation, enter the
-separation in millimetres and Apply. Then choose Align front & back: click two
-landmarks on the front and the corresponding landmarks on the back **in the same
-order**. Choose points far apart. Apply, then inspect Both to check the overlay.
-Two-point alignment cannot correct perspective: use perpendicular photos or scans.
+Use + Add image inside a layer to choose a TIFF. Preparation writes a multilevel
+PNG tile pyramid to disk. Progress and Cancel are available while it works. The
+original TIFF is unnecessary afterward. Several scans may describe the same layer:
+populated, partially sanded, exposed copper, and so on. PNG/JPEG also work for
+smaller images. Very large scans should use TIFF with reasonably sized strips/tiles.
 
-## Reconstruct the board
+Click a scan to make it primary. Its ⋯ properties rename it, adjust its transform,
+flip it, align it or delete it. Removing a scan leaves the layer's copper intact.
+The first scan establishes the initial coordinate system, which survives its deletion.
 
-Component offers a small package list. Click to place. Select the body to edit its
-reference, value, rotation, side, body width or body height. Drag the body to move
-it; drag one of its four corner squares to resize it with the opposite corner
-fixed. Hold Shift to preserve the original width:height ratio. Body resizing leaves
-all pads, traces and vias in place.
+## Inspection and alignment
 
-A custom body starts with no pads: select it, choose Add pad and click the board.
-Select a pad to set its number, name, dimensions, local coordinates and type.
-Drag its interior to move it; drag a corner to resize its copper with the opposite
-corner fixed. The pad centre moves and any trace vertices attached there follow
-it, while other trace bends stay fixed. Hold Shift to preserve a rectangle's ratio.
-Round pads and bodies stay circular during corner resizing. Through-hole pads keep their drill unchanged
-and mouse resizing leaves at least 0.1 mm between outer and drill diameters
-(0.05 mm of copper per side). Numeric fields remain available for precision.
-Each drag is one undo step; Escape cancels it. Connectivity updates on release.
-Pads store real dimensions and numbering; the catalog is only a starting point.
+The primary scan always belongs to the active layer. Comparison can be another
+scan from any layer. Blend at 0% shows primary; 100% shows comparison; near 50%
+shows both. Drawing opacity separately fades the components, pads, traces, vias
+and ordinary labels. Changing any view control does not dirty the project.
+Switching layers restores the remembered primary and clears Comparison.
 
-A single selected component or pad shows pin labels as **Name | Number**, or just
-the number when no name is set. Group selections hide pin labels to avoid clutter.
+For alignment, select the target scan's properties, choose any other scan as
+reference, and choose 3–5 point pairs. Select Align to reference, click the reference
+landmarks, then Pick target landmarks and click those landmarks in the same order.
+Spread them across the board. Review the blend preview and RMS error. Apply changes
+only the target scan. Redo points starts over, and Cancel preserves its transform.
+Alignment never moves reconstructed copper or unrelated scans.
 
-Drag from empty canvas space to select components and pads inside a rectangle.
-Only fully enclosed objects are selected. Enclosing a whole component body selects
-it once, including its pads. Enclosing only pads selects those pads individually.
-Traces, vias and photos keep their direct-click selection behavior. Drag any selected
-item to move the group; only trace points attached to moved pad centres follow.
-Other bends stay fixed, even when both ends of a trace move. Delete removes the
-selected objects together, with one Undo to restore them. Groups have no resize handles.
+Flip horizontally / vertically are explicit confirmed commands. A flip preserves
+approximate placement but marks the scan for alignment checking. Perspective,
+shear and warped scans are outside this tool's alignment model.
 
-Use **Ctrl+C / Ctrl+V** (Command on macOS) to copy components and individual pads.
-Paste places the selection's centre at the current mouse position and keeps its
-relative spacing. Components get new IDs and references; individual pads stay in
-their original component and get new pin numbers. Names, dimensions, values and
-datasheet references are retained; electrical net names and attached traces are not copied. The clipboard
-is internal to this app and clears on New/Open. Each paste is one undo step.
+## Reconstruct copper
 
-Trace draws on the side selected by Draw on. Click to start, click corners, and
-click a conductor or press Enter to finish. A pale circle marks a snap target.
-Escape cancels an unfinished trace. Select a trace and drag its squares to change
-corners; double-click a segment to insert a corner. Delete removes a selected
-corner, or the entire trace when it has only two points. Drag a trace segment to
-move the whole trace. Vias join front and back copper wherever their lands touch.
+Components and traces belong to the active physical layer. Choose Component,
+select a package and click to place. Catalog proportions are a starting point.
+Select the body to edit its reference, value, layer, rotation and dimensions.
+Custom components allow manually placed pads. No calibration is required.
 
-Select pads, traces or vias to inspect their connected net. Set a name such as
-GND or +5V in Properties. Naming does not create a hidden connection. Physical
-contact determines nets; deleting a bridge splits them. Attached trace vertices
-follow moved component pads and vias when they coincide exactly with their centers.
-Moving other geometry can disconnect it, so inspect the highlighted net afterward.
+Pads use Name | Number labels. Select one to edit its number, name, local
+position, dimensions and shape. A visible hole does not connect through the board.
+Add an explicit via at the pin to represent an established barrel connection.
 
-Orange warnings mean names conflict on touching copper or an imported name is
-repeated on disconnected copper. Select and rename the affected group, correct
-its geometry, or Undo. AI export includes these warnings without blocking the download.
+Trace clicks start/add vertices; click copper or press Enter to finish. Escape
+cancels unfinished work. Double-click a segment to insert a vertex. Select and
+drag a vertex to edit it; Delete removes the chosen vertex or a two-point trace.
+Trace width and actual pad geometry determine contact.
 
-## Datasheets
+Place one via, then set its From layer and To layer in Properties. It appears on
+every layer in that continuous physical span and joins touching copper there.
+Moving it changes its one global position. Exactly attached endpoints on all its
+participating layers follow; other bends stay fixed. Components and pads similarly
+carry exact endpoint anchors on their own layer only.
 
-Select a component and use **Attach PDF** in Properties. The PDF is embedded in
-the `.pcbrev` file when you save. Components using identical PDF bytes share one
-copy. **Open** uses a new browser tab and its normal PDF viewer. **Replace** links
-a different PDF; **Remove** clears that component's link. Undo restores replaced
-or removed datasheets. There is no separate attachment panel.
+Drag empty space to select fully enclosed components/pads. Whole bodies supersede
+individual child pads. Move or delete a group in one undo step. Copy/paste preserves
+source layers, spacing, component values, pin labels and datasheet relationships,
+while generating new references/IDs and clearing copied net assignments. Traces
+are not copied. A copied standalone pad remains on its original parent.
 
-## Save and export
+Single body/pad corner handles keep the opposite corner fixed. Shift preserves
+aspect ratio. Round geometry stays round, and pad drills keep their diameter.
+Escape cancels a drag. Undo/redo is conventional and grouped by completed edit.
 
-Save As chooses a `.pcbrev` file anywhere, including an Obsidian vault. Save and
-Ctrl+S then update that file directly. Failed or canceled saves leave work Unsaved.
-If an external editor changes the file, ordinary Save refuses to overwrite it:
-Save As preserves your version separately, or reopen to load the disk version.
-New and Open ask before discarding unsaved edits; a browser close warns too.
+## Calibration and electrical names
 
-Export → BOM CSV writes references, values, package names and sides. Export → AI
-package writes `<project name>-AI.zip` with `graph.json`, `context.md` and any
-referenced PDFs. The graph lists components, pins and electrical nets, including
-user names and connectivity warnings. It is generated from the current board each
-time. The package excludes board photographs and physical geometry, so keep the
-`.pcbrev` file as the full project source.
+Measure works in board units until calibrated. Optional Calibrate millimeters uses
+two points and their known separation. It changes conversion only: existing scans,
+components, pads, traces and vias remain in the same positions and sizes.
+
+Select a pad, trace or via to inspect its net and enter names such as GND or VBAT.
+The inspector lists connected pads across layers. A name does not connect separated
+copper. Warnings identify touching copper with conflicting names or disconnected
+copper sharing a name. Correct geometry/names or inspect the incomplete evidence.
+AI export includes warnings and remains available.
+
+## Datasheets, save and export
+
+Select a component to Attach PDF. Identical bytes reuse a hash-named project file.
+Open PDF launches the browser's normal viewer in a new tab. Replace/Remove change
+the component relationship; Undo can restore it. PDFs remain in the project folder.
+
+Save / Ctrl+S writes only `project.json`. If that file changes externally, reopen
+before saving. There is no Save As; duplicate the whole folder with your file
+manager when needed. Import .pcbrev migrates old embedded-file projects into a
+separate empty folder without modifying the source.
+
+BOM CSV uses Reference, Value, Footprint and Layer. AI package writes one ZIP with
+readable context, a multilayer net-centric graph and referenced PDFs. It excludes
+scans and physical geometry. Keep the project directory as the full engineering
+source. Clean unused assets removes orphaned app-owned files while retaining undo,
+redo and clipboard references.
 
 ## Shortcuts
 
 | Action                                     | Shortcut                          |
 | ------------------------------------------ | --------------------------------- |
-| New / Open                                 | Ctrl+N / Ctrl+O                   |
-| Save / Save As                             | Ctrl+S / Ctrl+Shift+S             |
+| New / Open / Save                          | Ctrl+N / Ctrl+O / Ctrl+S          |
 | Undo / Redo                                | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y   |
 | Select / Component / Trace / Via / Measure | V / C / T / B / M                 |
-| Delete selected objects or trace corner    | Delete                            |
-| Finish trace                               | Enter                             |
-| Cancel / return to Select                  | Escape                            |
-| Copy / Paste components or pads            | Ctrl+C / Ctrl+V                   |
-| Select multiple components/pads            | Drag from empty canvas            |
-| Preserve ratio during corner resize        | Shift + drag                      |
-| Fit board                                  | F                                 |
-| Zoom                                       | Mouse wheel                       |
-| Pan                                        | Middle mouse drag or Space + drag |
+| Copy / Paste                               | Ctrl+C / Ctrl+V                   |
+| Delete selection / finish trace / cancel   | Delete / Enter / Escape           |
+| Previous / next physical layer             | Space+W / Space+S                 |
+| Previous / next scan in active layer       | Space+Z / Space+C, or Space+wheel |
+| Blend toward primary / comparison          | Space+A / Space+D                 |
+| Drawing opacity down / up                  | Space+Q / Space+E                 |
+| Pan                                        | Space+left drag, or middle drag   |
+| Zoom / fit                                 | Wheel / F                         |
 
-Command is accepted in place of Ctrl on macOS. The browser may reserve some
-shortcuts; all file actions are also available in the top bar. Text fields keep
-normal text-editing shortcuts. Save commits the field being edited and finishes
-a trace with at least two points before writing.
+Command is accepted instead of Ctrl on macOS. Inputs keep ordinary typing behavior.
+Space alone starts no drag or edit. A short HUD reports view adjustments. Every
+view shortcut also has a layer/scan row, dropdown, slider or mouse equivalent.

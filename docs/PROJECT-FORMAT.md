@@ -1,16 +1,19 @@
-# Project format: PCB RevEng Simple v1
+# PCB RevEng Simple project format v2
 
-A UTF-8, indented JSON file with extension `.pcbrev`:
+A project is a directory, with UTF-8 `project.json` as its engineering document:
 
 ```json
 {
   "app": "pcb-reveng-simple",
-  "version": 1,
-  "name": "Amplifier Board",
-  "pxPerMm": 10,
-  "calibrated": false,
-  "nextId": 1,
-  "layers": [],
+  "version": 2,
+  "name": "Board",
+  "nextId": 3,
+  "calibration": null,
+  "physicalLayers": [
+    { "id": 1, "description": "Top" },
+    { "id": 2, "description": "Bottom" }
+  ],
+  "scans": [],
   "components": [],
   "traces": [],
   "vias": [],
@@ -18,114 +21,118 @@ A UTF-8, indented JSON file with extension `.pcbrev`:
 }
 ```
 
-All object IDs are positive, unique integers. `nextId` exceeds the largest ID.
-World coordinates are image-space pixels; divide by `pxPerMm` to obtain mm.
-The positive X axis points right and positive Y points down. Both sides share a
-front-view coordinate system. Back components mirror local X before rotation.
+IDs are positive unique integers across object collections. `nextId` exceeds all
+current IDs. Physical-layer array order defines depth; displayed L1/L2 numbering
+is derived from this order. Components and traces retain stable `layerId` values
+when the physical stack is reordered. A reorder requires confirmation when a
+via's effective participating layers change.
 
-## Photos
+## Board geometry
 
-At most one layer per `side` (`front` or `back`). A layer contains `id`, `name`,
-`side`, `width`, `height` (decoded pixels), embedded `dataURL` (PNG/JPEG/WebP),
-`tx`, `ty` (world pixels), `scale` (world pixels per image pixel), `rot` (degrees),
-`mirror` (boolean) and `opacity` (0–1).
+All geometry uses one global board coordinate system, with X right and Y down.
+Calibration is either null or `{ "boardUnitsPerMm": 94.488 }`. It is a display
+conversion only and never changes geometry.
 
-The transform is: optionally negate image X, multiply by scale, rotate, then
-translate by tx/ty. No external paths or URLs are necessary. Photos are larger
-in JSON because of base64 encoding, but remain portable and backed up with the file.
+A component contains `id`, unique `ref`, `value`, `footprint` (package description),
+`layerId`, `x`, `y`, `rot` (degrees), `body`, `pins` and optional `datasheetId`.
+Body geometry is `{x,y,w,h,shape?}` in local board units. Pin geometry is
+`{num,name?,x,y,w,h,shape,tht?,hole?,netName?}` in the same local units. Component
+rotation maps local coordinates into the board; no physical layer automatically
+mirrors component geometry. Round pads have equal dimensions. `hole` is a diameter;
+`tht` is retained only as a visual drill flag and has no cross-layer electrical meaning.
 
-## Components and pads
+A trace contains `id`, `layerId`, `width` and two or more `{x,y}` `points`.
+A via contains `id`, global `x`, `y`, `r`, `hole` (both radii), `fromLayerId`,
+`toLayerId`, and optional `netName`. It is one conductor participating on every
+physical layer between the two endpoint IDs, inclusive. At least two layers are
+required. Contact on participating layers joins its one union-find node.
 
-A component has `id`, `ref`, `value`, `footprint` (display name), optional
-`datasheetId`, `x`, `y`, `rot`, `side`, `body`
-(`w`, `h`, `xmm`, `ymm`, optional `shape`) and `pins`.
-Body `xmm`/`ymm` are its local centre in mm, independent of the component's pad
-origin. Older files default these offsets to zero. They let corner resizing keep
-the opposite body corner fixed without moving the component origin or its pads.
-Body offsets are internal geometry, not separate inspector controls.
+Pin/trace/via `netName` labels do not create invisible links. Geometry determines
+physical connectivity; conflicting names on touching copper or repeated names on
+disconnected copper produce warnings. Derived nets are never stored.
 
-Each pin has unique string `num`, optional `name`, `xmm`, `ymm` (component-local mm),
-`w`, `h` (mm), and `shape` (`rect` or `circle`). A circle with `tht` other than
-false is a plated through-hole pad; `tht:false` is a one-sided round SMD land.
-Rectangles are SMD pads. `hole` is the drill **diameter** in mm for plated pads.
-Round pads always use equal width/height. Body and pad dimensions are physical mm;
-there is no component-scale transform. Body resizing does not change pad geometry.
-Round bodies preserve a 1:1 ratio during corner resizing.
-The app stores explicit pad geometry: future catalog changes cannot move saved pads.
-Resize handles, selections, the internal clipboard and active drags are UI state
-and are never serialized. Copied components get new IDs and references; copied pads
-get new numbers on their existing parent. Paste never carries `netName` or traces; copied components keep their datasheet ID.
+## Scan files
 
-Existing v1 files with `component.scale` remain supported. On load, the multiplier
-is baked into body dimensions/offsets, pad offsets, pad dimensions and any drill diameter,
-then removed. Round pads normalize height to their visible width. Older round
-bodies preserve their visible diameter (the larger dimension). A missing or zero
-plated-pad drill is materialized from the old display default, 40% of outer width,
-so later copper resizing cannot resize the drill. Normalization happens once at
-load; saved projects use explicit geometry without a format-version change.
+Each scan contains `id`, `layerId`, `name`, `sourceName`, integer `width`, `height`,
+`tileSize:512`, integer `levels`, `flipX`, `flipY`, `aligned`, and
+`transform:{tx,ty,scale,rotation}`. Reflection acts in source pixels, followed by
+positive uniform scale, rotation, and translation into board units. Alignment
+stores the resulting transform only; there are no dependencies between scans.
+
+The path is derived exclusively from the numeric ID:
+
+```text
+images/scan-21/manifest.json
+images/scan-21/L0/0_0.png
+images/scan-21/L0/1_0.png
+images/scan-21/L1/0_0.png
+```
+
+L0 has the source dimensions. Each subsequent level uses ceil(width/2),
+ceil(height/2), until both dimensions fit within 512 pixels. Edge tiles contain
+only their valid source extent. All levels use PNG; L0 is lossless.
+
+The manifest is the completion marker and is written after every required tile:
+
+```json
+{
+  "complete": true,
+  "width": 1025,
+  "height": 769,
+  "tileSize": 512,
+  "levels": [
+    { "level": 0, "width": 1025, "height": 769 },
+    { "level": 1, "width": 513, "height": 385 },
+    { "level": 2, "width": 257, "height": 193 }
+  ]
+}
+```
+
+Incomplete imports are never adopted into the document. Original TIFF paths and
+file handles are not stored. Open checks manifests, while individual tiles are
+checked on demand. Missing scan files do not discard engineering metadata.
 
 ## Datasheets
 
-`attachments` is a project-level array of PDF records with `id`, `name`,
-`mime: "application/pdf"`, `size` in bytes, lowercase SHA-256 `sha256`, and an
-embedded `data:application/pdf;base64,...` URL. Components refer to these records
-through `datasheetId`; several components may share one record. The app checks PDF
-signature, size and checksum before opening a project. Loading older v1 files
-without `attachments` treats the collection as empty. An obsolete component
-`kicad` value is silently discarded on load; the package description remains in
-`footprint`. Saving keeps version 1 and does not write `kicad`.
+Attachments contain only `{id,name,mime,size,sha256}`, with
+`mime:"application/pdf"` and a lowercase SHA-256. The PDF lives at
+`datasheets/<sha256>.pdf`. Components share IDs for identical bytes. Data URLs,
+PDF bytes and image tiles never belong in `project.json` or undo snapshots.
 
-In memory, `State.attachments` contains only metadata. PDF bytes live in a separate
-asset map and remain available while the current project or undo/redo history
-references them. Saving embeds them in the single JSON `.pcbrev` file.
+## Persistence and history
 
-## Traces and vias
+New asks for a new empty folder and creates the document and asset directories.
+Open validates metadata transactionally. Save rewrites only `project.json` using
+the directory handle and checks for external metadata modifications first.
+A failed/cancelled action preserves the current project. File picker permissions
+are not stored in the project.
 
-A trace has `id`, `side`, `width` (world pixels), and two or more `points` (`x`,`y`).
-It represents round-capped copper, not an invisible net connection.
+Undo/redo retains 60 geometry/metadata snapshots. Asset IDs are not reused during
+a session. Files remain on disk until explicit cleanup; cleanup also retains
+assets referenced by undo/redo and the component clipboard. Only numeric scan
+folder names and hash-named PDFs under the app-owned asset directories are eligible.
 
-A via has `id`, `x`, `y`, `r` and `hole` (outer and drill **radii**, world pixels).
-Every via connects both sides. Blind/buried vias are intentionally unsupported.
+Active physical layer, remembered primary scans, comparison, blend, drawing
+opacity, selection, clipboard, alignment preview, zoom and pan are session state.
+They never mark the document dirty or appear in JSON.
 
-## Electrical names
+## Legacy import
 
-A pin, trace or via may have `netName`, a user-assigned name anchored to that
-conductor. Derived net IDs, colors, selections and transient connection maps are
-not serialized. Physical connected components are recalculated from the geometry.
-SMD copper only joins its own side. Plated pads and vias join both sides.
+`Import .pcbrev` accepts Simple v1, and the previously supported conservative
+original-upstream conversion subset. It writes a separate new directory.
+Front/back become two stable physical layers; photo transforms are preserved as
+scan transforms, and opacity is discarded. Local millimeter geometry is multiplied
+by the old `pxPerMm`. Back mirroring is baked into local X offsets. Existing world
+trace/via positions stay fixed. Each old plated pad gains an explicit L1–L2 barrel
+via to preserve its former electrical behavior. Embedded PDFs become hash-named
+files. The original JSON is never overwritten. Calibration remains null if the
+old project had not been calibrated.
 
-Naming a net places one name anchor on the selected conductor and clears other
-names in that physical group. If copper is disconnected, the name stays with its
-anchor. If the anchor itself is deleted, its name is deleted too; Undo restores it.
-Different names on touching copper are conflicts. Repeated names on disconnected
-copper are conflicts rather than implicit electrical links. Auto-generated names
-are deterministic and cannot collide with explicitly assigned names.
+## AI export
 
-## Loading and saving
-
-Unsupported versions, invalid dimensions, duplicate references/IDs/pin numbers,
-invalid layer counts, undecodable photos and invalid PDFs reject the entire open operation.
-The current document remains intact. File handles and Saved checkpoints change
-only on a successful Open or completed Save. Existing-file Save checks modification
-time and size before writing; it cannot eliminate a race with an external writer
-changing the file between that check and the final close.
-
-A successful Open starts a fresh in-memory undo history. Save does not save view
-state or undo history. Photos and PDFs referenced by current or historical states
-remain in memory; unreachable assets are released when history advances.
-
-`graph.json` and `context.md` are derived only when exporting an AI package. They
-are never stored in `.pcbrev`. The export contains a net-centric electrical graph,
-warnings and referenced PDFs; it excludes photos and physical coordinates.
-
-## Legacy conversion
-
-`app: "pcb-reveng"`, version 1 or 2 is accepted only for a single two-sided board
-with supported embedded photos and known small-catalog footprints. Geometry is
-materialized and existing net assignments are retained as labels on conductors.
-Disconnected legacy assignments become warnings that require review before export.
-
-Multi-board, schematic, notes, custom BOM, off-page links, inner copper, blind vias,
-warps, external/downscaled images, unknown packages, inconsistent pads and explicit
-no-connect data are refused. The original stays usable in upstream PCB RevEng.
-A converted document has no overwrite handle and is Unsaved until Save As.
+The streamed ZIP contains `context.md`, `graph.json`, and referenced PDFs only.
+Graph schema `pcb-reveng-ai-graph-v2` contains project name, physical-layer IDs,
+indices/descriptions, components with displayed layer names, pin/net membership,
+net naming flags, copper counts and connectivity warnings. Coordinates and scans
+are omitted. Paths for PDFs are sanitized and disambiguated. AI data is derived
+from live connectivity at export time and is never stored in the document.

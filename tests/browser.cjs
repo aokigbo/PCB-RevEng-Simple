@@ -1,249 +1,277 @@
-// Run against npm start: NODE_PATH=/path/to/playwright/node_modules node tests/browser.cjs
-// File pickers use deterministic handles; every edit below goes through browser UI.
 const { chromium } = require("playwright");
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
+const fflate = require("../vendor/fflate-0.8.3.js");
+const tiff = require("./tiff-fixture.cjs");
 (async () => {
   const browser = await chromium.launch({
     executablePath: process.env.CHROME_PATH || undefined,
     headless: true,
     args: ["--no-sandbox"],
   });
-  const page = await browser.newPage({ viewport: { width: 1440, height: 950 } }),
+  const page = await browser.newPage({ viewport: { width: 1500, height: 1000 } }),
     errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   page.on("dialog", (d) => d.accept());
-  await page.addInitScript(() => {
-    window.testFiles = { text: "", picks: 0, writes: 0, modified: 1 };
-    const handle = {
-      name: "Amplifier.pcbrev",
-      getFile: async () => ({
-        lastModified: testFiles.modified,
-        size: testFiles.text.length,
-        text: async () => testFiles.text,
-      }),
-      createWritable: async () => ({
-        write: async (text) => {
-          testFiles.text = text;
-          testFiles.writes++;
-        },
-        close: async () => {
-          testFiles.modified++;
-        },
-        abort: async () => {},
-      }),
-    };
-    window.showSaveFilePicker = async () => {
-      testFiles.picks++;
-      return handle;
-    };
-    window.showOpenFilePicker = async () => [handle];
-  });
   const out = process.env.TEST_OUTPUT || "test-results";
   await fs.mkdir(out, { recursive: true });
   try {
-    await page.goto(process.env.TEST_URL || "http://127.0.0.1:8080");
-    await page.waitForSelector("#inspector h2");
-    await page.screenshot({ path: path.join(out, "empty.png") });
-    const imageURL = await page.evaluate(() => {
-      const c = document.createElement("canvas");
-      c.width = 1000;
-      c.height = 650;
-      const x = c.getContext("2d");
-      x.fillStyle = "#165347";
-      x.fillRect(0, 0, 1000, 650);
-      x.strokeStyle = "#799b71";
-      x.lineWidth = 12;
-      x.strokeRect(45, 45, 910, 560);
-      x.fillStyle = "#e5b965";
-      for (const [a, b] of [
-        [100, 100],
-        [900, 100],
-        [100, 550],
-        [900, 550],
-      ]) {
-        x.beginPath();
-        x.arc(a, b, 16, 0, Math.PI * 2);
-        x.fill();
-      }
-      x.fillStyle = "#c9e7bc";
-      x.font = "20px sans-serif";
-      x.fillText("REV A   ·   AMPLIFIER", 100, 590);
-      x.font = "14px sans-serif";
-      x.fillText("TEST FIXTURE — SYNTHETIC BOARD PHOTO", 100, 620);
-      return c.toDataURL("image/png");
+    await page.addInitScript(() => {
+      window.showDirectoryPicker = async () => window.testDirectory;
+      window.showSaveFilePicker = async (options) => {
+        window.exportOptions = options;
+        return testDirectory.getFileHandle("analysis.zip", { create: true });
+      };
     });
-    const backURL = await page.evaluate(async (url) => {
-      const img = new Image();
-      img.src = url;
-      await img.decode();
-      const c = document.createElement("canvas");
-      c.width = img.width;
-      c.height = img.height;
-      const x = c.getContext("2d");
-      x.translate(c.width, 0);
-      x.scale(-1, 1);
-      x.drawImage(img, 0, 0);
-      return c.toDataURL("image/png");
-    }, imageURL);
-    const photo = {
-      name: "front.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(imageURL.split(",")[1], "base64"),
-    };
-    async function upload(side) {
-      if (side === "back") await page.locator("[data-tool=select]").click();
+    await page.goto(process.env.TEST_URL || "http://127.0.0.1:8080");
+    await page.waitForSelector("#layer-stack h2");
+    async function freshFolder() {
+      await page.evaluate(async () => {
+        const root = await navigator.storage.getDirectory();
+        window.testDirectory = await root.getDirectoryHandle("pcb-test-" + crypto.randomUUID(), {
+          create: true,
+        });
+      });
+    }
+    await freshFolder();
+    await page.getByRole("button", { name: "New", exact: true }).click();
+    await page.waitForFunction(() => ProjectFile.root && !ProjectFile.busy);
+    assert.equal(await page.evaluate(() => isDirty()), false);
+    assert.equal(
+      await page.evaluate(
+        async () =>
+          JSON.parse(
+            await (await (await testDirectory.getFileHandle("project.json")).getFile()).text(),
+          ).version,
+      ),
+      2,
+    );
+    await page.getByRole("button", { name: "+ Add layer", exact: true }).click();
+    await page.waitForFunction(() => State.physicalLayers.length === 3);
+    async function upload(file) {
       const chooser = page.waitForEvent("filechooser");
       await page
-        .getByRole("button", { name: "Add " + side + " photo", exact: true })
+        .locator("#layer-stack .layer-group")
         .first()
+        .getByRole("button", { name: "+ Add image", exact: true })
         .click();
-      await (
-        await chooser
-      ).setFiles({
-        ...photo,
-        name: side + ".png",
-        buffer: Buffer.from((side === "back" ? backURL : imageURL).split(",")[1], "base64"),
-      });
-      await page.waitForFunction((side) => State.layers.some((l) => l.side === side), side);
+      await (await chooser).setFiles(file);
     }
+    const source = tiff(1025, 769);
+    await upload({ name: "copper.tif", mimeType: "image/tiff", buffer: source });
+    await page.waitForFunction(
+      () => State.scans.length === 1 && !ProjectFile.busy,
+      {},
+      { timeout: 60000 },
+    );
+    const fidelity = await page.evaluate(async () => {
+      const scan = State.scans[0],
+        dir = await scanDirectory(scan.id),
+        manifest = JSON.parse(
+          await (await (await dir.getFileHandle("manifest.json")).getFile()).text(),
+        ),
+        l0 = await dir.getDirectoryHandle("L0"),
+        tile = await createImageBitmap(await (await l0.getFileHandle("2_1.png")).getFile()),
+        c = new OffscreenCanvas(tile.width, tile.height),
+        ctx = c.getContext("2d");
+      ctx.drawImage(tile, 0, 0);
+      const rgba = Array.from(ctx.getImageData(0, 1, 1, 1).data);
+      return { manifest, edge: [tile.width, tile.height], rgba };
+    });
+    assert.deepEqual(fidelity.edge, [1, 257]);
+    assert.deepEqual(fidelity.rgba, [0, 1, 1, 255]);
+    assert.deepEqual(
+      fidelity.manifest.levels.map((l) => [l.width, l.height]),
+      [
+        [1025, 769],
+        [513, 385],
+        [257, 193],
+      ],
+    );
+    await page.waitForFunction(() => Tiles.cache.bytes > 0);
+    assert.ok(await page.evaluate(() => Tiles.cache.bytes < 512 * 1024 * 1024));
+    for (const [name, options] of [
+      ["tiled-deflate", { tiled: true, compression: 8 }],
+      ["stripped-lzw", { compression: 5 }],
+      ["big-tiff", { big: true }],
+    ]) {
+      await upload({
+        name: name + ".tif",
+        mimeType: "image/tiff",
+        buffer: tiff(513, 515, options),
+      });
+      await page.waitForFunction(
+        () => State.scans.length === 2 && !ProjectFile.busy,
+        {},
+        { timeout: 60000 },
+      );
+      const mismatches = await page.evaluate(async () => {
+        const scan = State.scans[1],
+          dir = await (await scanDirectory(scan.id)).getDirectoryHandle("L0");
+        let bad = 0;
+        for (let ty = 0; ty < Math.ceil(scan.height / 512); ty++)
+          for (let tx = 0; tx < Math.ceil(scan.width / 512); tx++) {
+            const img = await createImageBitmap(
+                await (await dir.getFileHandle(tx + "_" + ty + ".png")).getFile(),
+              ),
+              c = new OffscreenCanvas(img.width, img.height),
+              ctx = c.getContext("2d");
+            ctx.drawImage(img, 0, 0);
+            const bytes = ctx.getImageData(0, 0, img.width, img.height).data;
+            for (let y = 0; y < img.height; y++)
+              for (let x = 0; x < img.width; x++) {
+                const p = (y * img.width + x) * 4,
+                  gx = tx * 512 + x,
+                  gy = ty * 512 + y;
+                if (
+                  bytes[p] !== gx % 256 ||
+                  bytes[p + 1] !== gy % 256 ||
+                  bytes[p + 2] !== (gx + gy) % 256 ||
+                  bytes[p + 3] !== 255
+                )
+                  bad++;
+              }
+            img.close();
+          }
+        return bad;
+      });
+      assert.equal(mismatches, 0, name + " L0 pixels");
+      await page.getByRole("button", { name: "Properties scan " + name, exact: true }).click();
+      await page.getByRole("button", { name: "Delete scan", exact: true }).click();
+      assert.equal(await page.evaluate(() => State.scans.length), 1);
+    }
+    const png = await page.evaluate(() => {
+      const c = document.createElement("canvas");
+      c.width = 128;
+      c.height = 96;
+      const x = c.getContext("2d");
+      x.fillStyle = "#557766";
+      x.fillRect(0, 0, 128, 96);
+      return c.toDataURL("image/png");
+    });
+    await upload({
+      name: "populated.png",
+      mimeType: "image/png",
+      buffer: Buffer.from(png.split(",")[1], "base64"),
+    });
+    await page.waitForFunction(() => State.scans.length === 2 && !ProjectFile.busy);
+    await page
+      .getByLabel("Comparison", { exact: true })
+      .selectOption(await page.evaluate(() => String(State.scans[0].id)));
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.waitForFunction(() => !isDirty() && !ProjectFile.busy);
+    const clean = await page.evaluate(() => snapshot());
+    await page.keyboard.down("Space");
+    await page.keyboard.press("s");
+    await page.keyboard.press("w");
+    await page.keyboard.press("c");
+    await page.keyboard.press("z");
+    await page.keyboard.press("q");
+    await page.keyboard.up("Space");
+    await page.getByLabel("Drawing opacity", { exact: true }).fill("0.5");
+    assert.equal(await page.evaluate(() => snapshot()), clean);
+    assert.equal(await page.evaluate(() => isDirty()), false);
+    await page.evaluate(() => {
+      View.panX = 500;
+      View.panY = 350;
+      View.zoom = 1;
+      setPrimaryScan(State.scans[0].id);
+      change(() => {
+        const c = makeComponent(
+          "free",
+          {
+            w: 10,
+            h: 6,
+            pinList: [
+              { num: 1, x: -2, y: 0, w: 1, h: 1, shape: "rect", tht: false },
+              { num: 2, x: 2, y: 0, w: 1, h: 1, shape: "rect", tht: false },
+            ],
+          },
+          100,
+          100,
+          "U",
+          View.activeLayerId,
+        );
+        State.components.push(c);
+      });
+    });
     async function clickWorld(x, y) {
       const p = await page.evaluate(
         ({ x, y }) => {
-          const p = worldToScreen(x, y),
+          const q = worldToScreen(x, y),
             r = View.canvas.getBoundingClientRect();
-          return { x: p.x + r.left, y: p.y + r.top };
+          return { x: q.x + r.left, y: q.y + r.top };
         },
         { x, y },
       );
       await page.mouse.click(p.x, p.y);
     }
-    async function setField(label, value) {
-      await page.getByLabel(label, { exact: true }).fill(String(value));
-      await page.getByLabel(label, { exact: true }).press("Tab");
-    }
-    await upload("front");
-    await upload("back");
-    await page.locator("[data-tool=measure]").click();
-    await page.getByRole("button", { name: "Set scale · two points" }).click();
-    await clickWorld(-100, 0);
-    await clickWorld(100, 0);
-    await setField("Known distance (mm)", 20);
-    await page.getByRole("button", { name: "Apply scale" }).click();
-    assert.ok(Math.abs((await page.evaluate(() => State.pxPerMm)) - 10) < 0.02);
-    await page.getByRole("button", { name: "Align front & back" }).click();
-    await clickWorld(-400, -225);
-    await clickWorld(400, -225);
-    await clickWorld(-400, -225);
-    await clickWorld(400, -225);
-    await page.getByRole("button", { name: "Apply alignment" }).click();
-    assert.ok(
-      await page.evaluate(() => {
-        const a = imageToWorld(State.layers[0], { x: 100, y: 100 }),
-          b = imageToWorld(State.layers[1], { x: 900, y: 100 });
-        return Math.hypot(a.x - b.x, a.y - b.y) < 3;
-      }),
-    );
-    await page.locator("[data-view=front]").click();
-    await page.locator("[data-tool=component]").click();
-    await page.getByLabel("Size", { exact: true }).selectOption("1206");
-    await clickWorld(-150, 0);
-    await clickWorld(150, 0);
-    await page.locator("[data-tool=select]").click();
-    await clickWorld(-150, 0);
-    await setField("Value", "10k");
-    const endpoints = await page.evaluate(() => [
-      pinWorldPos(State.components[0], State.components[0].pins[1]),
-      pinWorldPos(State.components[1], State.components[1].pins[0]),
-    ]);
-    await page.locator("[data-tool=trace]").click();
-    await clickWorld(endpoints[0].x, endpoints[0].y);
-    await clickWorld(0, 50);
-    await clickWorld(endpoints[1].x, endpoints[1].y);
-    assert.equal(await page.evaluate(() => State.traces.length), 1);
-    await page.locator("[data-tool=via]").click();
-    await clickWorld(0, 50);
-    assert.equal(await page.evaluate(() => State.vias.length), 1);
-    await page.locator("[data-tool=select]").click();
-    await clickWorld(0, 50);
-    await setField("Net name", "GND");
-    await page.locator("[data-view=back]").click();
-    await page.locator("[data-tool=trace]").click();
-    await clickWorld(0, 50);
-    await clickWorld(0, 150);
-    await page.keyboard.press("Enter");
+    await clickWorld(100, 100);
+    await page.getByLabel("Value", { exact: true }).fill("MC35XS3400DH");
+    await page.getByLabel("Value", { exact: true }).press("Tab");
+    const chooser = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Attach PDF", exact: true }).click();
+    const pdf = Buffer.from("%PDF-1.4\n% test datasheet\n%%EOF");
+    await (await chooser).setFiles({ name: "part.pdf", mimeType: "application/pdf", buffer: pdf });
+    await page.waitForFunction(() => State.attachments.length === 1 && !ProjectFile.busy);
+    await page.keyboard.press("Escape");
+    await clickWorld(100, 100);
+    await page.keyboard.press("Control+c");
+    await page.mouse.move(900, 600);
+    await page.keyboard.press("Control+v");
+    assert.equal(await page.evaluate(() => State.components.length), 2);
     assert.equal(
-      await page.evaluate(() => Connectivity.byKey.get("t" + State.traces[1].id).name),
-      "GND",
+      await page.evaluate(
+        () => State.components[0].datasheetId === State.components[1].datasheetId,
+      ),
+      true,
     );
-    await page.locator("[data-view=front]").click();
-    await page.locator("[data-tool=component]").click();
-    await page.getByLabel("Component", { exact: true }).selectOption("custom");
-    await clickWorld(-200, -150);
-    await page.locator("[data-tool=select]").click();
-    await clickWorld(-200, -150);
-    await page.getByRole("button", { name: "Add pad", exact: true }).click();
-    await clickWorld(-200, -150);
-    await setField("Width (mm)", 2);
-    await setField("Height (mm)", 1.2);
-    assert.equal(await page.evaluate(() => State.components.at(-1).pins.length), 1);
-    await setField("Project name", "Amplifier Board");
-    await page.keyboard.press("Control+s");
-    await page.waitForFunction(() => !isDirty());
-    assert.equal(await page.evaluate(() => testFiles.picks), 1);
-    await page.getByLabel("Project name", { exact: true }).fill("Amplifier");
-    assert.equal(await page.locator("#save-state").innerText(), "Unsaved");
-    await page.keyboard.press("Control+s");
-    await page.waitForFunction(() => !isDirty());
-    assert.equal(await page.evaluate(() => testFiles.picks), 1);
-    assert.equal(await page.evaluate(() => testFiles.writes), 2);
-    // Delete the via, then verify undo and redo change cross-side connectivity.
-    await page.locator("[data-tool=select]").click();
-    await clickWorld(0, 50);
-    await page.keyboard.press("Delete");
-    assert.equal(await page.evaluate(() => State.vias.length), 0);
-    await page.keyboard.press("Control+z");
-    assert.equal(await page.evaluate(() => State.vias.length), 1);
-    await page.keyboard.press("Control+Shift+z");
-    assert.equal(await page.evaluate(() => State.vias.length), 0);
-    await page.keyboard.press("Control+z");
-    await page.keyboard.press("Control+s");
-    await page.waitForFunction(() => !isDirty());
-    const saved = await page.evaluate(() => testFiles.text);
-    await fs.writeFile(path.join(out, "Amplifier.pcbrev"), saved);
-    await page.getByRole("button", { name: "New", exact: true }).click();
-    assert.equal(await page.evaluate(() => State.components.length), 0);
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await page.waitForFunction(() => !isDirty() && !ProjectFile.busy);
+    const before = await page.evaluate(() => snapshot());
     await page.getByRole("button", { name: "Open", exact: true }).click();
-    await page.waitForFunction(() => State.components.length === 3);
-    assert.equal(await page.evaluate(() => State.layers.length), 2);
-    assert.equal(await page.evaluate(() => Connectivity.issues.length), 0);
-    assert.equal(await page.evaluate(() => isDirty()), false);
-    await page.locator("[data-view=both]").click();
+    await page.waitForFunction(() => !ProjectFile.busy);
+    assert.equal(await page.evaluate(() => snapshot()), before);
     await page.locator("#export-menu summary").click();
-    const download = page.waitForEvent("download");
     await page.getByRole("button", { name: "AI package" }).click();
-    await (await download).saveAs(path.join(out, "Amplifier-AI.zip"));
-    const zip = require("../vendor/fflate-0.8.3.js").unzipSync(
-      new Uint8Array(await fs.readFile(path.join(out, "Amplifier-AI.zip"))),
+    await page.waitForFunction(() => !ProjectFile.busy && window.exportOptions);
+    const zip = Buffer.from(
+      await page.evaluate(async () =>
+        Array.from(
+          new Uint8Array(
+            await (
+              await (await testDirectory.getFileHandle("analysis.zip")).getFile()
+            ).arrayBuffer(),
+          ),
+        ),
+      ),
     );
-    assert.ok(zip["context.md"]);
-    const graph = JSON.parse(require("../vendor/fflate-0.8.3.js").strFromU8(zip["graph.json"]));
-    assert.ok(graph.nets.some((n) => n.name === "GND"));
-    assert.ok(graph.components.some((c) => c.reference === "R1"));
-    await clickWorld(0, 50);
-    await page.screenshot({ path: path.join(out, "workspace.png") });
-    await require("./browser-resize.cjs")({ page, out, clickWorld, setField });
-    await require("./browser-selection.cjs")({ page, out, clickWorld });
-    await require("./browser-datasheets.cjs")({ page, out });
+    const files = fflate.unzipSync(zip),
+      graph = JSON.parse(fflate.strFromU8(files["graph.json"]));
+    assert.equal(graph.schema, "pcb-reveng-ai-graph-v2");
+    assert.equal(graph.components[0].layer, "L1");
+    assert.equal(Object.keys(files).filter((p) => p.endsWith(".pdf")).length, 1);
+    assert.equal(graph.scans, undefined);
+    assert.equal(graph.components[0].x, undefined);
+    assert.match(await page.evaluate(() => exportOptions.suggestedName), /-AI\.zip$/);
+    await page.screenshot({ path: path.join(out, "multilayer-workspace.png") });
+    await require("./browser-advanced.cjs")({ page, png, tiff, clickWorld, freshFolder });
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: photo import, calibration, alignment, placement, trace/via connectivity, custom pads, naming, undo/redo, save/reopen, AI package, no browser errors.",
+      "PASS: directory New/Open/Save, real TIFF worker/pyramid/L0 pixels, multiple scans, view shortcuts, components/copy/datasheets and streaming AI ZIP.",
     );
-  } catch (err) {
+  } catch (e) {
     console.error("Browser errors:", errors);
+    console.error(
+      "Toast:",
+      await page
+        .locator("#toast")
+        .textContent()
+        .catch(() => ""),
+    );
     await page.screenshot({ path: path.join(out, "failure.png") });
-    throw err;
+    throw e;
   } finally {
     await browser.close();
   }

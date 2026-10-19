@@ -510,3 +510,95 @@ summary::-webkit-details-marker {
     gap: 4px;
   }
 }
+/* Physical evidence stack and transient view controls. */
+main {
+  grid-template-columns: 86px minmax(0, 1fr) 330px;
+}
+#sidebar {
+  overflow-y: auto;
+  background: var(--panel);
+  border-left: 1px solid var(--line);
+}
+#layer-stack,
+#view-controls {
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--line);
+}
+#layer-stack {
+  max-height: 36vh;
+  overflow-y: auto;
+}
+#inspector {
+  border: 0;
+  overflow: visible;
+}
+.layer-group {
+  border-left: 3px solid transparent;
+  padding-left: 5px;
+  margin-bottom: 8px;
+}
+.layer-group.active {
+  border-left-color: var(--accent);
+  background: #263d3840;
+}
+.layer-row,
+.scan-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+.layer-name,
+.scan-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+.layer-name {
+  font-weight: 650;
+}
+.scan-row {
+  padding-left: 12px;
+}
+.scan-name,
+.scan-menu,
+.layer-menu,
+.add-image {
+  border: 0;
+  background: transparent;
+}
+.scan-row.primary .scan-name {
+  color: var(--accent);
+}
+.add-image {
+  font-size: 11px;
+  color: var(--muted);
+}
+#view-hud {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: pre-line;
+  background: #152b29ee;
+  border: 1px solid #74bba0;
+  padding: 12px 22px;
+  border-radius: 8px;
+  text-align: center;
+  pointer-events: none;
+  z-index: 4;
+}
+#import-progress {
+  position: absolute;
+  bottom: 50px;
+  left: 20px;
+  padding: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  z-index: 5;
+}
+#import-progress button {
+  margin-left: 12px;
+}

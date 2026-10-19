@@ -58,6 +58,7 @@ function field(parent, label, value, onChange, options = {}) {
       }
     }
     onChange(v);
+    refreshSaveState();
   });
   wrap.append(input);
   parent.append(wrap);
@@ -93,95 +94,318 @@ function notify(message, error = false) {
 }
 function refreshSaveState() {
   const dirty = isDirty() || Editor.fieldDirty;
-  $("save-state").textContent = ProjectFile.busy ? "Working…" : dirty ? "Unsaved" : "Saved";
-  $("save-state").classList.toggle("saved", !dirty && !ProjectFile.busy);
+  $("save-state").textContent = ProjectFile.busy
+    ? "Working…"
+    : !ProjectFile.root
+      ? "Choose project folder"
+      : dirty
+        ? "Unsaved"
+        : "Saved";
   if (document.activeElement !== $("project-name")) $("project-name").value = State.name;
   document.title = (dirty ? "• " : "") + State.name + " — PCB RevEng Simple";
-  for (const id of ["new", "open", "save", "save-as"])
+  for (const id of ["new", "open", "import-project", "save"])
     $(id).disabled =
-      ProjectFile.busy || (["open", "save", "save-as"].includes(id) && !fileAccessAvailable());
-  $("undo").disabled = !History.past.length;
-  $("redo").disabled = !History.future.length;
+      ProjectFile.busy || !fileAccessAvailable() || (id === "save" && !ProjectFile.root);
+  $("undo").disabled = ProjectFile.busy || !History.past.length;
+  $("redo").disabled = ProjectFile.busy || !History.future.length;
+  $("project-name").disabled = !ProjectFile.root || ProjectFile.busy;
+  document
+    .querySelectorAll("#layer-stack .add-image, #layer-stack .block-button")
+    .forEach((b) => (b.disabled = !ProjectFile.root || ProjectFile.busy));
+  document
+    .querySelectorAll("#layer-stack .layer-row")
+    .forEach((row) => (row.draggable = !!ProjectFile.root && !ProjectFile.busy));
 }
-function syncPhotoControls() {
-  for (const side of ["front", "back"]) {
-    const l = State.layers.find((l) => l.side === side),
-      input = $(side + "-opacity");
-    input.disabled = !l;
-    if (l) input.value = l.opacity;
+function showImportProgress(text, visible) {
+  $("import-progress").hidden = !visible;
+  $("import-progress-text").textContent = text;
+}
+let hudTimer;
+function hud(text) {
+  $("view-hud").textContent = text;
+  $("view-hud").hidden = false;
+  clearTimeout(hudTimer);
+  hudTimer = setTimeout(() => ($("view-hud").hidden = true), 1800);
+}
+function normalizeView() {
+  if (!State.physicalLayers.some((l) => l.id === View.activeLayerId))
+    View.activeLayerId = State.physicalLayers[0].id;
+  for (const l of State.physicalLayers) {
+    const scans = State.scans.filter((s) => s.layerId === l.id);
+    if (!scans.some((s) => s.id === View.primaryByLayer.get(l.id)))
+      View.primaryByLayer.set(l.id, scans[0]?.id ?? null);
   }
+  if (
+    !State.scans.some((s) => s.id === View.comparisonId) ||
+    View.comparisonId === View.primaryByLayer.get(View.activeLayerId)
+  )
+    View.comparisonId = null;
+}
+function activateLayer(id) {
+  if (!State.physicalLayers.some((l) => l.id === id)) return;
+  if (Editor.drag) cancelDrag();
+  Editor.trace = [];
+  Editor.selection = null;
+  Editor.mode = null;
+  Editor.padTarget = null;
+  Editor.snap = null;
+  if (id !== View.activeLayerId) View.comparisonId = null;
+  View.activeLayerId = id;
+  normalizeView();
+  renderLayers();
+  renderInspector();
+  syncViewControls();
+  updateHint();
+  requestRender();
+  hud(
+    "Layer " +
+      (State.physicalLayers.findIndex((l) => l.id === id) + 1) +
+      " / " +
+      State.physicalLayers.length +
+      "\n" +
+      layerName(id, true),
+  );
+}
+function setPrimaryScan(id) {
+  const scan = State.scans.find((s) => s.id === id && s.layerId === View.activeLayerId);
+  View.primaryByLayer.set(View.activeLayerId, scan?.id ?? null);
+  if (View.comparisonId === id) View.comparisonId = null;
+  syncViewControls();
+  renderLayers();
+  requestRender();
+  if (scan) {
+    const list = State.scans.filter((s) => s.layerId === scan.layerId);
+    hud(
+      layerName(scan.layerId) +
+        " · " +
+        scan.name +
+        "\n" +
+        (list.indexOf(scan) + 1) +
+        " / " +
+        list.length,
+    );
+  }
+}
+function cycleLayer(delta) {
+  const i = State.physicalLayers.findIndex((l) => l.id === View.activeLayerId);
+  activateLayer(
+    State.physicalLayers[Math.max(0, Math.min(State.physicalLayers.length - 1, i + delta))].id,
+  );
+}
+function cycleScan(delta) {
+  if (Editor.mode) return;
+  const scans = State.scans.filter((s) => s.layerId === View.activeLayerId);
+  if (!scans.length) return;
+  const i = scans.findIndex((s) => s.id === View.primaryByLayer.get(View.activeLayerId));
+  setPrimaryScan(scans[(i + delta + scans.length) % scans.length].id);
+}
+function adjustBlend(delta) {
+  if (View.comparisonId === null) return;
+  View.blend = Math.max(0, Math.min(1, Math.round((View.blend + delta) * 100) / 100));
+  syncViewControls();
+  requestRender();
+  hud("Image blend\n" + Math.round(View.blend * 100) + "%");
+}
+function adjustDrawing(delta) {
+  View.drawingOpacity = Math.max(
+    0,
+    Math.min(1, Math.round((View.drawingOpacity + delta) * 100) / 100),
+  );
+  syncViewControls();
+  requestRender();
+  hud("Drawing\n" + Math.round(View.drawingOpacity * 100) + "%");
+}
+function visibleScans() {
+  const m = Editor.mode;
+  if (m?.kind === "align") {
+    const ref = State.scans.find((s) => s.id === m.referenceId),
+      target = State.scans.find((s) => s.id === m.targetId);
+    if (m.phase === "reference") return ref ? [ref] : [];
+    if (m.phase === "target") return target ? [target] : [];
+    return ref && target ? [ref, { ...target, transform: m.fit.transform }] : [];
+  }
+  const primary = State.scans.find(
+      (s) =>
+        s.id === View.primaryByLayer.get(View.activeLayerId) && s.layerId === View.activeLayerId,
+    ),
+    comparison = State.scans.find((s) => s.id === View.comparisonId);
+  return primary
+    ? [primary, ...(comparison && comparison.id !== primary.id ? [comparison] : [])]
+    : [];
+}
+function defaultViaEnd() {
+  const layers = State.physicalLayers,
+    i = layers.findIndex((l) => l.id === View.activeLayerId);
+  return (layers[i + 1] || layers[i - 1])?.id;
+}
+function formatDistance(value) {
+  return (
+    (value / (State.calibration?.boardUnitsPerMm || 1)).toFixed(2) +
+    (State.calibration ? " mm" : " u")
+  );
+}
+function dimension(parent, label, value, fn, min = 0.001, max = 1e10) {
+  const factor = State.calibration?.boardUnitsPerMm || 1;
+  return numeric(
+    parent,
+    label + (State.calibration ? " (mm)" : " (units)"),
+    value / factor,
+    (v) => fn(v * factor),
+    min / factor,
+    max / factor,
+  );
+}
+function layerChoices() {
+  return State.physicalLayers.map((l) => [String(l.id), layerName(l.id, true)]);
+}
+function syncViewControls() {
+  normalizeView();
+  const primary = $("primary-scan"),
+    compare = $("comparison-scan");
+  primary.replaceChildren();
+  compare.replaceChildren();
+  const option = (node, value, text) => {
+    const o = el("option", text);
+    o.value = value;
+    node.append(o);
+  };
+  option(primary, "", "No scan");
+  for (const s of State.scans.filter((s) => s.layerId === View.activeLayerId))
+    option(primary, s.id, s.name);
+  primary.value = View.primaryByLayer.get(View.activeLayerId) ?? "";
+  option(compare, "", "None");
+  for (const s of State.scans)
+    if (s.id !== View.primaryByLayer.get(View.activeLayerId))
+      option(compare, s.id, layerName(s.layerId) + " / " + s.name);
+  compare.value = View.comparisonId ?? "";
+  compare.disabled = !View.primaryByLayer.get(View.activeLayerId);
+  $("blend").disabled = View.comparisonId === null;
+  $("blend").value = View.blend;
+  $("drawing-opacity").value = View.drawingOpacity;
+}
+function inspect(type, object) {
+  Editor.mode = null;
+  Editor.selection = { type, object };
+  renderInspector();
+  requestRender();
+}
+function renderLayers() {
+  const panel = $("layer-stack");
+  panel.replaceChildren();
+  panel.append(el("h2", "Physical layers"));
+  for (const l of State.physicalLayers) {
+    const group = el(
+        "div",
+        undefined,
+        "layer-group" + (l.id === View.activeLayerId ? " active" : ""),
+      ),
+      row = el("div", undefined, "layer-row");
+    row.draggable = !!ProjectFile.root && !ProjectFile.busy;
+    row.dataset.layerId = l.id;
+    button(row, layerName(l.id, true), () => activateLayer(l.id), "layer-name");
+    button(row, "⋯", () => inspect("physicalLayer", l), "layer-menu").setAttribute(
+      "aria-label",
+      "Properties " + layerName(l.id),
+    );
+    row.ondragstart = (e) => e.dataTransfer.setData("text/plain", String(l.id));
+    row.ondragover = (e) => e.preventDefault();
+    row.ondrop = (e) => {
+      e.preventDefault();
+      if (ProjectFile.busy) return;
+      const from = Number(e.dataTransfer.getData("text/plain"));
+      if (from === l.id) return;
+      const ids = State.physicalLayers.map((x) => x.id).filter((id) => id !== from),
+        index = ids.indexOf(l.id);
+      if (index < 0) return;
+      ids.splice(index, 0, from);
+      try {
+        reorderLayers(ids, (n) =>
+          confirm(
+            "Reordering changes the physical span of " +
+              n +
+              " vias and may change connectivity. Reorder layers?",
+          ),
+        );
+        afterEdit();
+      } catch (error) {
+        notify(error.message, true);
+      }
+    };
+    group.append(row);
+    for (const s of State.scans.filter((s) => s.layerId === l.id)) {
+      const scanRow = el(
+        "div",
+        undefined,
+        "scan-row" + (View.primaryByLayer.get(l.id) === s.id ? " primary" : ""),
+      );
+      button(
+        scanRow,
+        (View.comparisonId === s.id ? "⇄ " : "") + s.name,
+        () => {
+          if (View.activeLayerId !== l.id) activateLayer(l.id);
+          setPrimaryScan(s.id);
+        },
+        "scan-name",
+      );
+      button(scanRow, "⋯", () => inspect("scan", s), "scan-menu").setAttribute(
+        "aria-label",
+        "Properties scan " + s.name,
+      );
+      group.append(scanRow);
+    }
+    button(group, "+ Add image", () => chooseScan(l.id), "add-image").disabled =
+      !ProjectFile.root || ProjectFile.busy;
+    panel.append(group);
+  }
+  button(
+    panel,
+    "+ Add layer",
+    () => change(() => State.physicalLayers.push({ id: nextId(), description: "" })),
+    "block-button",
+  ).disabled = !ProjectFile.root || ProjectFile.busy;
+}
+let importLayerId = 1;
+function chooseScan(id) {
+  importLayerId = id;
+  $("scan-input").value = "";
+  $("scan-input").click();
 }
 function netInspector(panel, key) {
   const net = Connectivity.byKey.get(key);
   if (!net) return;
   panel.append(el("h3", "Connectivity"));
+  paragraph(panel, net.members.length + " connected copper objects");
+  field(panel, "Net name", net.names.length === 1 ? net.names[0] : "", (v) =>
+    change(() => nameNet(key, v)),
+  ).placeholder = net.name;
   paragraph(
     panel,
-    net.conflict
-      ? "Review these conflicting names in the AI package."
-      : net.members.length + " connected copper object" + (net.members.length === 1 ? "" : "s"),
+    "Pads: " +
+      net.members
+        .filter((m) => m.type === "pad")
+        .map((m) => m.c.ref + "." + m.p.num + " (" + layerName(m.c.layerId) + ")")
+        .join(", "),
   );
-  field(panel, "Net name", net.names.length === 1 ? net.names[0] : "", (name) =>
-    change(() => nameNet(key, name)),
-  ).placeholder = net.name;
-  if (net.names.length > 1)
-    paragraph(panel, "Conflicting names: " + net.names.join(" / "), "warning");
-  const pads = net.members.filter((m) => m.type === "pad").map((m) => m.c.ref + "." + m.p.num);
-  paragraph(panel, pads.length ? "Pads: " + pads.join(", ") : "No component pads connected yet.");
 }
-function setupInspector(panel) {
-  panel.append(el("h2", "Board setup"));
-  paragraph(panel, "Photographs first. Copper next.");
-  for (const side of ["front", "back"]) {
-    const l = State.layers.find((l) => l.side === side);
-    if (l)
-      button(
-        panel,
-        (side === "front" ? "Front" : "Back") + " · " + l.name,
-        () => {
-          Editor.selection = { type: "image", object: l };
-          setView(side);
-          renderInspector();
-          requestRender();
-        },
-        "block-button",
-      );
-    else button(panel, "Add " + side + " photo", () => choosePhoto(side), "block-button");
+function datasheetInspector(panel, c) {
+  panel.append(el("h3", "Datasheet"));
+  const a = State.attachments.find((a) => a.id === c.datasheetId);
+  if (!a) {
+    button(panel, "Attach PDF", () => chooseDatasheet(c));
+    return;
   }
-  panel.append(el("h3", "Next steps"));
-  const steps = [
-    [!!State.layers.length, "Add board photographs"],
-    [State.calibrated, "Set the image scale"],
-    [!!State.components.length, "Place components and pads"],
-    [!!State.traces.length, "Trace copper and add vias"],
-  ];
-  steps.forEach(([done, text], i) => {
-    const row = el("div", undefined, "step" + (done ? " done" : ""));
-    row.append(el("b", done ? "✓" : String(i + 1)), el("span", text));
-    panel.append(row);
-  });
-  button(
-    panel,
-    State.calibrated ? "Measure / align photos" : "Set scale / align photos",
-    () => setTool("measure"),
-    "block-button",
-  );
-  const stats = el("div", undefined, "stats");
-  stats.append(
-    el("span", State.components.length + " parts"),
-    el("span", Connectivity.nets.length + " nets"),
-  );
-  panel.append(stats);
+  paragraph(panel, a.name + " · " + (a.size / 1048576).toFixed(1) + " MB");
+  const row = el("div", undefined, "row");
+  panel.append(row);
+  button(row, "Open PDF", () => openDatasheet(c));
+  button(row, "Replace", () => chooseDatasheet(c));
+  button(row, "Remove", () => removeDatasheet(c));
 }
 function componentToolInspector(panel) {
   panel.append(el("h2", "Place component"));
-  paragraph(
-    panel,
-    "Choose a package, then click the board. Use Select to edit its reference, value and pads.",
-  );
   field(
     panel,
-    "Component",
+    "Package",
     Editor.package,
     (v) => {
       Editor.package = v;
@@ -189,610 +413,560 @@ function componentToolInspector(panel) {
       componentPreview();
       renderInspector();
     },
-    { choices: Object.entries(PACKAGES).map(([k, p]) => [k, p.label]) },
+    { choices: Object.entries(PACKAGES).map(([key, p]) => [key, p.label]) },
   );
-  if (["smd", "tht", "custom"].includes(Editor.package)) {
-    const params = componentParams();
+  const generic = ["custom", "smd", "tht"].includes(Editor.package),
+    params = componentParams();
+  if (generic) {
     for (const [key, label] of [
-      ["w", "Body width (mm)"],
-      ["h", "Body height (mm)"],
-    ])
+      ["w", "Body width"],
+      ["h", "Body height"],
+      ["pitch", "Pad pitch"],
+    ]) {
+      if (key === "pitch" && Editor.package === "custom") continue;
       numeric(
         panel,
-        label,
-        params[key],
+        label + " (units)",
+        params[key] * 10,
         (v) => {
-          Editor.params[key] = v;
+          Editor.params[key] = v / 10;
           componentPreview();
         },
-        0.1,
-        1000,
+        0.01,
+        1e8,
       );
-    if (Editor.package !== "custom") {
+    }
+    if (Editor.package !== "custom")
       field(
         panel,
         "Pads",
         params.count,
         (v) => {
-          Editor.params.count = v;
+          Editor.params.count = Number(v);
           componentPreview();
         },
         { type: "number", min: 1, max: 100, integer: true },
       );
-      numeric(
-        panel,
-        "Pad pitch (mm)",
-        params.pitch,
-        (v) => {
-          Editor.params.pitch = v;
-          componentPreview();
-        },
-        0.1,
-        100,
-      );
-    } else
-      paragraph(
-        panel,
-        "After placing the body, select it and choose Add pad. Each pad can be moved and resized directly.",
-      );
-  } else {
-    const def = getFootprintDef(PACKAGES[Editor.package].id);
-    for (const prm of def.params) {
+  } else
+    for (const prm of getFootprintDef(PACKAGES[Editor.package].id).params) {
       if (prm.type === "bool") continue;
-      const value = Editor.params[prm.key] ?? prm.def;
       field(
         panel,
-        prm.label,
-        value,
+        prm.label.replace(/ mm/g, ""),
+        Editor.params[prm.key] ?? prm.def,
         (v) => {
-          Editor.params[prm.key] = v;
+          Editor.params[prm.key] = prm.type === "int" ? Number(v) : v;
           componentPreview();
         },
         {
           choices: prm.type === "select" ? prm.options : undefined,
           type: prm.type === "int" ? "number" : "text",
-          integer: prm.type === "int",
           min: prm.min,
           max: prm.max,
-          step: prm.step,
+          integer: prm.type === "int",
         },
       );
     }
-  }
-  if (!State.calibrated)
-    paragraph(
-      panel,
-      "Set the photograph scale with Measure before matching packages to the board.",
-      "warning",
-    );
+  paragraph(
+    panel,
+    "Click to place on " +
+      layerName(View.activeLayerId) +
+      ". Catalog proportions are a starting point; resize the body and pads directly.",
+  );
 }
-function measureInspector(panel) {
-  panel.append(el("h2", "Measure & align"));
-  const m = Editor.mode;
-  if (!m) {
-    paragraph(
+function beginAlignment(target, referenceId, count) {
+  if (!referenceId || referenceId === target.id) return;
+  if (View.activeLayerId !== target.layerId) activateLayer(target.layerId);
+  setPrimaryScan(target.id);
+  Editor.selection = null;
+  Editor.tool = "measure";
+  Editor.mode = {
+    kind: "align",
+    targetId: target.id,
+    referenceId,
+    count,
+    phase: "reference",
+    referencePoints: [],
+    sourcePoints: [],
+  };
+  renderInspector();
+  updateHint();
+  requestRender();
+}
+function alignmentInspector(panel, m) {
+  panel.append(el("h2", "Align scans"));
+  const ref = State.scans.find((s) => s.id === m.referenceId),
+    target = State.scans.find((s) => s.id === m.targetId);
+  paragraph(panel, "Reference: " + ref.name + "\nTarget: " + target.name);
+  if (m.phase === "reference") {
+    paragraph(panel, "Reference points: " + m.referencePoints.length + " / " + m.count);
+    button(panel, "Pick target landmarks", () => {
+      m.phase = "target";
+      renderInspector();
+      updateHint();
+      requestRender();
+    }).disabled = m.referencePoints.length !== m.count;
+  } else if (m.phase === "target")
+    paragraph(panel, "Target points: " + m.sourcePoints.length + " / " + m.count);
+  else {
+    paragraph(panel, "Preview · RMS error " + formatDistance(m.fit.rms));
+    button(
       panel,
-      State.calibrated
-        ? "Scale: " + State.pxPerMm.toFixed(3) + " pixels per mm"
-        : "Set the scale using a known distance, such as connector pin spacing.",
+      "Apply alignment",
+      () => {
+        const transform = m.fit.transform;
+        Editor.mode = null;
+        change(() => {
+          target.transform = transform;
+          target.aligned = true;
+        });
+      },
+      "primary",
     );
-    const stack = el("div", undefined, "stack");
-    panel.append(stack);
-    button(stack, "Set scale · two points", () => startMeasure("calibrate"));
-    button(stack, "Measure a distance", () => startMeasure("measure"));
-    button(stack, "Align front & back", () => startMeasure("align"));
-    paragraph(
-      panel,
-      "Align before placing copper. For the back photo, match the same two physical landmarks in the same order. A back photograph is mirrored on import.",
-    );
-    return;
   }
-  if (m.kind === "align") {
-    paragraph(
-      panel,
-      "1. Pick two landmarks on the front.\n2. Pick those same landmarks on the back.",
-    );
-    paragraph(
-      panel,
-      "Front: " + m.target.length + "/2 points · Back: " + m.source.length + "/2 points",
-    );
-    if (m.source.length === 2)
-      button(
-        panel,
-        "Apply alignment",
-        () => {
-          const l = State.layers.find((l) => l.side === "back");
-          if (!change(() => alignImage(l, m.source, m.target))) return;
-          Editor.mode = null;
-          setView("both");
-          fitBoard();
-          renderInspector();
-          updateHint();
-        },
-        "primary",
-      );
-  } else if (m.points.length === 2) {
-    const distance = Math.hypot(m.points[1].x - m.points[0].x, m.points[1].y - m.points[0].y);
-    paragraph(panel, (distance / State.pxPerMm).toFixed(3) + " mm", "pill");
-    if (m.kind === "calibrate") {
-      const input = numeric(panel, "Known distance (mm)", 10, () => {}, 0.001, 100000);
-      paragraph(
-        panel,
-        "Changing scale updates package sizes and physical measurements. Set this before tracing.",
-      );
-      button(
-        panel,
-        "Apply scale",
-        () => {
-          const mm = Number(input.value);
-          if (!Number.isFinite(mm) || mm <= 0 || distance < 2) {
-            notify("Choose distinct points and a positive distance.", true);
-            return;
-          }
-          const scale = distance / mm;
-          if (scale < 0.0001 || scale > 1e6) {
-            notify("That scale is outside the supported range. Check the distance.", true);
-            return;
-          }
-          change(() => {
-            State.pxPerMm = scale;
-            State.calibrated = true;
-          });
-          Editor.mode = null;
-          renderInspector();
-          updateHint();
-        },
-        "primary",
-      );
-    }
-  } else paragraph(panel, "Click two points on the photograph.");
-  button(panel, "Cancel", () => {
-    const prev = m.previousSide;
+  button(panel, "Redo points", () => {
+    m.phase = "reference";
+    m.referencePoints = [];
+    m.sourcePoints = [];
+    delete m.fit;
+    renderInspector();
+    updateHint();
+    requestRender();
+  });
+  button(panel, "Cancel alignment", () => {
     Editor.mode = null;
-    if (prev) setView(prev);
     renderInspector();
     updateHint();
     requestRender();
   });
 }
+function scanInspector(panel, s) {
+  panel.append(el("h2", "Scan"));
+  field(panel, "Scan name", s.name, (v) => change(() => (s.name = v)));
+  paragraph(panel, layerName(s.layerId, true) + " · " + s.width + " × " + s.height + " px");
+  paragraph(panel, s.aligned ? "Alignment confirmed" : "Check / align this scan");
+  for (const [key, label] of [
+    ["tx", "Image X"],
+    ["ty", "Image Y"],
+    ["scale", "Image scale"],
+    ["rotation", "Image rotation"],
+  ])
+    numeric(
+      panel,
+      label,
+      s.transform[key],
+      (v) =>
+        change(() => {
+          s.transform[key] = v;
+          s.aligned = false;
+        }),
+      key === "scale" ? 1e-9 : -1e10,
+      1e10,
+    );
+  for (const [axis, label] of [
+    ["flipX", "Flip horizontally"],
+    ["flipY", "Flip vertically"],
+  ])
+    button(panel, label, () => {
+      if (confirm(label + "? Check or realign this scan afterward."))
+        change(() => flipScan(s, axis));
+    });
+  const others = State.scans.filter((o) => o.id !== s.id);
+  if (others.length) {
+    let ref = others[0].id,
+      count = 3;
+    field(panel, "Alignment reference", String(ref), (v) => (ref = Number(v)), {
+      choices: others.map((o) => [String(o.id), layerName(o.layerId) + " / " + o.name]),
+    });
+    field(panel, "Landmark pairs", "3", (v) => (count = Number(v)), { choices: ["3", "4", "5"] });
+    button(panel, "Align to reference", () => beginAlignment(s, ref, count));
+  }
+  button(
+    panel,
+    "Delete scan",
+    () => {
+      if (confirm("Delete scan “" + s.name + "”? Reconstructed copper is retained.")) {
+        Editor.selection = null;
+        change(() => (State.scans = State.scans.filter((o) => o.id !== s.id)));
+      }
+    },
+    "danger",
+  );
+}
 function selectionInspector(panel, s) {
-  const o = s.object,
-    ppm = State.pxPerMm;
-  if (s.type === "image") {
-    panel.append(el("h2", o.side === "front" ? "Front photograph" : "Back photograph"));
-    paragraph(panel, o.name);
-    numeric(
+  const o = s.object;
+  if (s.type === "scan") {
+    scanInspector(panel, o);
+    return;
+  }
+  if (s.type === "physicalLayer") {
+    panel.append(el("h2", layerName(o.id, true)));
+    field(panel, "Layer description", o.description, (v) => change(() => (o.description = v)));
+    button(
       panel,
-      "Rotation (degrees)",
-      o.rot,
-      (v) => modifySelected((o) => (o.rot = v)),
-      -36000,
-      36000,
+      "Delete physical layer",
+      () => {
+        if (ProjectFile.busy || !ProjectFile.root) return;
+        const counts = ["components", "traces", "scans"]
+          .map((key) => State[key].filter((x) => x.layerId === o.id).length + " " + key)
+          .join(", ");
+        if (
+          !confirm(
+            "Delete " +
+              layerName(o.id, true) +
+              "? This deletes " +
+              counts +
+              " and adjusts or removes affected vias.",
+          )
+        )
+          return;
+        try {
+          deletePhysicalLayer(o.id);
+          Editor.selection = null;
+          afterEdit();
+        } catch (e) {
+          notify(e.message, true);
+        }
+      },
+      "danger",
     );
-    numeric(
-      panel,
-      "Image scale",
-      o.scale,
-      (v) => modifySelected((o) => (o.scale = v)),
-      0.0001,
-      10000,
-    );
-    const row = el("div", undefined, "row");
-    panel.append(row);
-    numeric(row, "X (mm)", o.tx / ppm, (v) => modifySelected((o) => (o.tx = v * ppm)), -1e6, 1e6);
-    numeric(row, "Y (mm)", o.ty / ppm, (v) => modifySelected((o) => (o.ty = v * ppm)), -1e6, 1e6);
-    checkbox(panel, "Mirror horizontally", o.mirror, (v) =>
-      modifySelected((o) => {
-        const center = imageToWorld(o, { x: o.width / 2, y: o.height / 2 });
-        o.mirror = v;
-        const after = imageToWorld(o, { x: o.width / 2, y: o.height / 2 });
-        o.tx += center.x - after.x;
-        o.ty += center.y - after.y;
-      }),
-    );
-    paragraph(
-      panel,
-      "Drag the photograph to position it. Photo adjustments leave copper annotations in place; align before tracing.",
-    );
-    button(panel, "Replace photo", () => choosePhoto(o.side));
-    button(panel, "Measure / align", () => setTool("measure"));
-  } else if (s.type === "component") {
+    return;
+  }
+  if (s.type === "component") {
     panel.append(el("h2", "Component"));
     field(panel, "Reference", o.ref, (v) =>
-      modifySelected((o) => {
+      modifySelected((c) => {
         v = v.trim();
-        if (!v || State.components.some((c) => c !== o && c.ref.toUpperCase() === v.toUpperCase()))
-          throw new Error("Use a unique component reference.");
-        o.ref = v;
+        if (!v || State.components.some((x) => x !== c && x.ref.toUpperCase() === v.toUpperCase()))
+          throw new Error("Use a unique reference.");
+        c.ref = v;
       }),
     );
-    field(panel, "Value", o.value, (v) => modifySelected((o) => (o.value = v)));
+    field(panel, "Value", o.value, (v) => modifySelected((c) => (c.value = v)));
     paragraph(panel, o.footprint, "pill");
-    field(panel, "Side", o.side, (v) => modifySelected((o) => (o.side = v)), {
-      choices: [
-        ["front", "Front"],
-        ["back", "Back"],
-      ],
-    });
+    field(
+      panel,
+      "Physical layer",
+      String(o.layerId),
+      (v) => modifySelected((c) => (c.layerId = Number(v))),
+      { choices: layerChoices() },
+    );
     numeric(
       panel,
       "Rotation (degrees)",
       o.rot,
-      (v) => modifySelected((o) => (o.rot = v)),
+      (v) => modifySelected((c) => (c.rot = v)),
       -36000,
       36000,
     );
-    numeric(
-      panel,
-      "Body width (mm)",
-      o.body.w,
-      (v) =>
-        modifySelected((o) => {
-          o.body.w = v;
-          if (o.body.shape === "circle") o.body.h = v;
+    for (const [key, label] of [
+      ["w", "Body width"],
+      ["h", "Body height"],
+    ])
+      dimension(panel, label, o.body[key], (v) =>
+        modifySelected((c) => {
+          c.body[key] = v;
+          if (c.body.shape === "circle") c.body.w = c.body.h = v;
         }),
-      0.01,
-      10000,
-    );
-    numeric(
-      panel,
-      "Body height (mm)",
-      o.body.h,
-      (v) =>
-        modifySelected((o) => {
-          o.body.h = v;
-          if (o.body.shape === "circle") o.body.w = v;
-        }),
-      0.01,
-      10000,
-    );
-    panel.append(el("h3", "Datasheet"));
-    const datasheet = State.attachments.find((a) => a.id === o.datasheetId);
-    if (datasheet) {
-      const size =
-        datasheet.size >= 1048576
-          ? (datasheet.size / 1048576).toFixed(1) + " MB"
-          : datasheet.size >= 1024
-            ? (datasheet.size / 1024).toFixed(1) + " KB"
-            : datasheet.size + " bytes";
-      paragraph(panel, datasheet.name + " · " + size);
-      const actions = el("div", undefined, "row");
-      panel.append(actions);
-      button(actions, "Open", () => openDatasheet(o));
-      button(actions, "Replace", () => chooseDatasheet(o));
-      button(actions, "Remove", () => removeDatasheet(o));
-    } else button(panel, "Attach PDF", () => chooseDatasheet(o));
+      );
+    datasheetInspector(panel, o);
     panel.append(el("h3", "Pads"));
-    o.pins.forEach((p, index) => {
-      const row = el("div", undefined, "pad-row");
-      button(row, "Pad " + p.num, () => {
-        Editor.selection = { type: "pad", object: o, index };
-        renderInspector();
-        requestRender();
-      });
-      row.append(el("span", Connectivity.byKey.get(pinKey(o, p))?.name || ""));
-      panel.append(row);
-    });
+    o.pins.forEach((p, index) =>
+      button(
+        panel,
+        "Pad " + p.num,
+        () => {
+          Editor.selection = { type: "pad", object: o, index };
+          renderInspector();
+          requestRender();
+        },
+        "block-button",
+      ),
+    );
     button(panel, "Add pad", () => {
       Editor.padTarget = o;
       updateHint();
-      notify("Click the board to place a new pad on " + o.ref);
     });
-    paragraph(
-      panel,
-      "Drag the body to move it. Drag a corner to resize; the opposite corner stays fixed. Hold Shift to preserve its ratio. Select a pad to edit it separately.",
-    );
   } else if (s.type === "pad") {
     const p = o.pins[s.index];
     panel.append(el("h2", o.ref + " · Pad " + p.num));
-    button(
-      panel,
-      "← Component " + o.ref,
-      () => {
-        Editor.selection = { type: "component", object: o };
-        renderInspector();
-        requestRender();
-      },
-      "block-button",
-    );
+    button(panel, "← Component " + o.ref, () => inspect("component", o));
     field(panel, "Pin number", p.num, (v) =>
       modifySelected(() => {
-        v = v.trim();
-        if (!v || o.pins.some((other) => other !== p && other.num === v))
-          throw new Error("Pin numbers must be unique within a component.");
+        if (!v.trim() || o.pins.some((q) => q !== p && q.num === v))
+          throw new Error("Use a unique pin number.");
         p.num = v;
       }),
     );
-    field(panel, "Pin name", p.name, (v) => modifySelected(() => (p.name = v)));
+    field(panel, "Pin name", p.name || "", (v) => modifySelected(() => (p.name = v)));
     field(
       panel,
-      "Pad type",
-      through(p) ? "tht" : p.shape,
+      "Pad shape",
+      p.shape,
       (v) =>
         modifySelected(() => {
-          p.shape = v === "rect" ? "rect" : "circle";
-          p.tht = v === "tht";
-          if (p.shape === "circle") p.h = p.w;
-          if (p.tht) p.hole = Math.min(p.hole || 0.6, p.w * 0.8);
+          p.shape = v;
+          if (v === "circle") p.h = p.w;
+          else {
+            p.tht = false;
+            delete p.hole;
+          }
+        }),
+      { choices: ["rect", "circle"] },
+    );
+    for (const [key, label] of [
+      ["x", "Local X"],
+      ["y", "Local Y"],
+      ["w", "Width"],
+      ["h", "Height"],
+    ]) {
+      if (key === "h" && p.shape === "circle") continue;
+      dimension(
+        panel,
+        label,
+        p[key],
+        (v) =>
+          modifySelected(() => {
+            if ((key === "w" || key === "h") && p.hole > v)
+              throw new Error("Pad must contain its hole.");
+            p[key] = v;
+            if (p.shape === "circle" && key === "w") p.h = v;
+          }),
+        ["x", "y"].includes(key) ? -1e10 : 0.001,
+      );
+    }
+    if (p.shape === "circle") {
+      checkbox(panel, "Visible drill hole", hasDrill(p), (v) =>
+        modifySelected(() => {
+          p.tht = v;
+          if (v) p.hole = p.w * 0.4;
           else delete p.hole;
         }),
-      {
-        choices: [
-          ["rect", "SMD · rectangular"],
-          ["circle", "SMD · round"],
-          ["tht", "Through-hole · round"],
-        ],
-      },
-    );
-    const row = el("div", undefined, "row");
-    panel.append(row);
-    numeric(row, "X (mm)", p.xmm, (v) => modifySelected(() => (p.xmm = v)), -10000, 10000);
-    numeric(row, "Y (mm)", p.ymm, (v) => modifySelected(() => (p.ymm = v)), -10000, 10000);
-    numeric(
-      panel,
-      p.shape === "circle" ? "Diameter (mm)" : "Width (mm)",
-      p.w,
-      (v) =>
-        modifySelected(() => {
-          if (p.hole && v < p.hole) throw new Error("Pad diameter must be greater than the hole.");
-          p.w = v;
-          if (p.shape === "circle") p.h = v;
-        }),
-      0.01,
-      10000,
-    );
-    if (p.shape !== "circle")
-      numeric(panel, "Height (mm)", p.h, (v) => modifySelected(() => (p.h = v)), 0.01, 10000);
-    if (through(p))
-      numeric(
-        panel,
-        "Hole diameter (mm)",
-        p.hole,
-        (v) => modifySelected(() => (p.hole = v)),
-        0.01,
-        p.w,
       );
-    netInspector(panel, pinKey(o, p));
+      if (hasDrill(p))
+        dimension(
+          panel,
+          "Hole diameter",
+          p.hole,
+          (v) => modifySelected(() => (p.hole = v)),
+          0.001,
+          p.w,
+        );
+    }
     paragraph(
       panel,
-      "Drag the pad to move it. Drag a corner to resize; the opposite corner stays fixed. Hold Shift to preserve its ratio.",
+      "A hole is visual geometry. Use an explicit via for cross-layer connectivity.",
     );
+    netInspector(panel, pinKey(o, p));
   } else if (s.type === "trace") {
     panel.append(el("h2", "Trace"));
-    field(panel, "Layer", o.side, (v) => modifySelected((o) => (o.side = v)), {
-      choices: [
-        ["front", "Front"],
-        ["back", "Back"],
-      ],
-    });
-    numeric(
+    field(
       panel,
-      "Width (mm)",
-      o.width / ppm,
-      (v) => modifySelected((o) => (o.width = v * ppm)),
-      0.01,
-      1000,
+      "Physical layer",
+      String(o.layerId),
+      (v) => modifySelected((t) => (t.layerId = Number(v))),
+      { choices: layerChoices() },
     );
+    dimension(panel, "Trace width", o.width, (v) => modifySelected((t) => (t.width = v)));
     netInspector(panel, "t" + o.id);
-    paragraph(
-      panel,
-      "Drag a square to move a corner. Double-click a segment to add a corner. Delete removes a selected corner or trace.",
-    );
   } else if (s.type === "via") {
     panel.append(el("h2", "Via"));
-    paragraph(panel, "Connects front and back copper.");
-    numeric(
-      panel,
-      "Diameter (mm)",
-      (o.r * 2) / ppm,
-      (v) =>
-        modifySelected((o) => {
-          if ((v * ppm) / 2 <= o.hole) throw new Error("Diameter must exceed the hole.");
-          o.r = (v * ppm) / 2;
-        }),
-      0.01,
-      1000,
+    for (const [key, label] of [
+      ["fromLayerId", "From layer"],
+      ["toLayerId", "To layer"],
+    ])
+      field(
+        panel,
+        label,
+        String(o[key]),
+        (v) =>
+          modifySelected((c) => {
+            const id = Number(v);
+            if (id === c[key === "fromLayerId" ? "toLayerId" : "fromLayerId"])
+              throw new Error("A via must span at least two physical layers.");
+            c[key] = id;
+          }),
+        { choices: layerChoices() },
+      );
+    dimension(panel, "Via diameter", o.r * 2, (v) =>
+      modifySelected((c) => {
+        if (v / 2 < c.hole) throw new Error("Diameter must contain the drill.");
+        c.r = v / 2;
+      }),
     );
-    numeric(
+    dimension(
       panel,
-      "Hole (mm)",
-      (o.hole * 2) / ppm,
-      (v) => modifySelected((o) => (o.hole = (v * ppm) / 2)),
-      0.01,
-      (o.r * 2) / ppm - 0.001,
+      "Hole diameter",
+      o.hole * 2,
+      (v) => modifySelected((c) => (c.hole = v / 2)),
+      0.001,
+      o.r * 2,
     );
     netInspector(panel, "v" + o.id);
   }
-  panel.append(el("hr", undefined, "panel-rule"));
-  button(
-    panel,
-    s.type === "trace" && s.vertex !== undefined ? "Delete selected corner" : "Delete " + s.type,
-    deleteSelected,
-    "danger",
-  );
+  if (["component", "pad", "trace", "via"].includes(s.type))
+    button(panel, "Delete selected", deleteSelected, "danger");
 }
 function renderInspector() {
   const panel = $("inspector");
   panel.replaceChildren();
+  if (Editor.mode?.kind === "align") {
+    alignmentInspector(panel, Editor.mode);
+    return;
+  }
   if (isGroupSelection()) {
-    const items = selectionItems();
-    panel.append(el("h2", items.length + " items selected"));
-    for (const type of ["component", "pad"]) {
-      const n = items.filter((s) => s.type === type).length;
-      if (n) paragraph(panel, n + " " + type + (n === 1 ? "" : "s"));
-    }
+    panel.append(el("h2", selectionItems().length + " items selected"));
+    paragraph(panel, "Move, copy/paste or delete this group.");
+    button(panel, "Delete selected", deleteSelected);
   } else if (Editor.selection) selectionInspector(panel, Editor.selection);
   else if (Editor.tool === "component") componentToolInspector(panel);
-  else if (Editor.tool === "measure") measureInspector(panel);
   else if (Editor.tool === "trace") {
     panel.append(el("h2", "Draw trace"));
-    paragraph(
-      panel,
-      "Click a pad, via or trace to start. Add corners with clicks, then click another conductor or press Enter to finish.",
-    );
-    numeric(
-      panel,
-      "Width (mm)",
-      Editor.traceWidth,
-      (v) => {
-        Editor.traceWidth = v;
-        requestRender();
-      },
-      0.01,
-      1000,
-    );
-    if (Editor.trace.length) button(panel, "Finish trace", finishTrace);
+    dimension(panel, "Trace width", Editor.traceWidth, (v) => (Editor.traceWidth = v));
+    button(panel, "Finish trace", finishTrace);
   } else if (Editor.tool === "via") {
     panel.append(el("h2", "Place via"));
-    paragraph(panel, "Click a trace or pad to connect copper between front and back.");
-    numeric(
+    dimension(panel, "Via diameter", Editor.viaDiameter, (v) => {
+      Editor.viaDiameter = v;
+      Editor.viaHole = Math.min(Editor.viaHole, v * 0.9);
+      renderInspector();
+    });
+    dimension(
       panel,
-      "Diameter (mm)",
-      Editor.viaDiameter,
-      (v) => {
-        if (v <= Editor.viaHole) {
-          notify("Diameter must exceed the hole.", true);
-          renderInspector();
-          return;
-        }
-        Editor.viaDiameter = v;
-      },
-      0.01,
-      1000,
-    );
-    numeric(
-      panel,
-      "Hole (mm)",
+      "Hole diameter",
       Editor.viaHole,
       (v) => (Editor.viaHole = v),
-      0.01,
-      Editor.viaDiameter - 0.001,
+      0.001,
+      Editor.viaDiameter,
     );
-  } else setupInspector(panel);
+    paragraph(
+      panel,
+      "New vias span the active layer and its nearest neighbor. Edit the span after placing.",
+    );
+  } else if (Editor.tool === "measure") {
+    panel.append(el("h2", "Measure"));
+    button(panel, "Measure distance", () => startMeasure("measure"));
+    button(panel, "Calibrate millimeters", () => startMeasure("calibrate"));
+    const m = Editor.mode;
+    if (m?.points.length === 2) {
+      const distance = Math.hypot(m.points[0].x - m.points[1].x, m.points[0].y - m.points[1].y);
+      paragraph(panel, "Distance: " + formatDistance(distance));
+      if (m.kind === "calibrate") {
+        const input = numeric(panel, "Known distance (mm)", 10, () => {}, 0.000001, 1e10);
+        button(panel, "Apply calibration", () => {
+          const mm = Number(input.value);
+          if (!Number.isFinite(mm) || mm <= 0 || distance <= 0) return;
+          change(() => (State.calibration = { boardUnitsPerMm: distance / mm }));
+        });
+      }
+    }
+    paragraph(
+      panel,
+      "Calibration only changes unit conversion. Geometry and scans stay in board coordinates. Select a scan’s properties to align it.",
+    );
+  } else {
+    panel.append(el("h2", "Board setup"));
+    paragraph(
+      panel,
+      ProjectFile.root
+        ? "Choose a scan and trace copper on the active physical layer."
+        : "Create a new project folder, open one, or import an existing .pcbrev file.",
+    );
+    if (ProjectFile.root) {
+      button(panel, "Add image", () => chooseScan(View.activeLayerId));
+      button(panel, "Clean unused assets", collectGarbage);
+    }
+  }
   if (Connectivity.issues.length) {
     panel.append(el("h3", "Connectivity warnings"));
-    for (const issue of Connectivity.issues.slice(0, 8)) paragraph(panel, issue, "warning");
-  }
-}
-let importSide = "front",
-  documentEpoch = 0;
-function choosePhoto(side) {
-  importSide = side;
-  $("photo-input").value = "";
-  $("photo-input").click();
-}
-function readPhoto(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result);
-    reader.onerror = () => reject(new Error("Unable to read photograph."));
-    reader.readAsDataURL(file);
-  });
-}
-async function importPhoto(file, side) {
-  const epoch = documentEpoch;
-  try {
-    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type))
-      throw new Error("Use a PNG, JPEG or WebP photograph.");
-    const dataURL = await readPhoto(file),
-      img = await decodePhoto(dataURL);
-    if (epoch !== documentEpoch) return;
-    const assetId = assetSequence++;
-    ImageAssets.set(assetId, { dataURL, img });
-    change(() => {
-      const existing = State.layers.find((l) => l.side === side);
-      const l = {
-        id: existing?.id || nextId(),
-        side,
-        name: file.name,
-        assetId,
-        width: img.naturalWidth,
-        height: img.naturalHeight,
-        tx: ((side === "back" ? 1 : -1) * img.naturalWidth) / 2,
-        ty: -img.naturalHeight / 2,
-        scale: 1,
-        rot: 0,
-        mirror: side === "back",
-        opacity: side === "back" ? 0.6 : 1,
-      };
-      if (existing) State.layers.splice(State.layers.indexOf(existing), 1, l);
-      else State.layers.push(l);
-      Editor.selection = { type: "image", object: l };
-    });
-    setView(side);
-    fitBoard();
-    notify("Added " + side + " photograph. Set scale, then align before tracing.");
-  } catch (err) {
-    notify(err.message, true);
+    Connectivity.issues.slice(0, 10).forEach((w) => paragraph(panel, w, "warning"));
   }
 }
 function resetWorkspace() {
-  documentEpoch++;
   Editor.fieldDirty = false;
   Editor.clipboard = null;
   Editor.drag = null;
-  Editor.trace = [];
   Editor.mode = null;
   Editor.selection = null;
+  Editor.trace = [];
   Editor.padTarget = null;
-  Editor.snap = null;
+  View.primaryByLayer.clear();
+  View.comparisonId = null;
+  View.drawingOpacity = 1;
+  View.activeLayerId = State.physicalLayers[0].id;
   setTool("select");
-  setView("front");
   afterEdit();
   fitBoard();
 }
-function prepareSave(saveAs) {
+function prepareSave() {
+  if (Editor.drag) cancelDrag();
   const active = document.activeElement;
   if (active instanceof HTMLInputElement) active.blur();
   if (Editor.trace.length >= 2) finishTrace();
-  return saveProject(saveAs);
+  return saveProject();
 }
 function wireKeyboard() {
   document.addEventListener("keydown", (e) => {
-    const input = ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName),
+    const input =
+        ["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName) || e.target.isContentEditable,
       cmd = e.ctrlKey || e.metaKey,
       key = e.key.toLowerCase();
     if (cmd && ["n", "o", "s"].includes(key)) {
       e.preventDefault();
       if (input) e.target.blur();
-      if (key === "s") prepareSave(e.shiftKey);
-      else if (key === "o") requestOpen();
-      else newProject();
+      if (key === "n") newProject();
+      else if (key === "o") openProject();
+      else prepareSave();
       return;
     }
     if (input) return;
-    if (cmd && (key === "c" || key === "v")) {
-      e.preventDefault();
-      if (key === "c") copySelected();
-      else pasteClipboard();
+    if (cmd) {
+      if (["c", "v", "z", "y"].includes(key)) {
+        e.preventDefault();
+        if (key === "c") copySelected();
+        else if (key === "v") pasteClipboard();
+        else runHistory(key === "y" || e.shiftKey);
+      }
       return;
     }
-    if (cmd && (key === "z" || key === "y")) {
-      e.preventDefault();
-      runHistory(key === "y" || e.shiftKey);
-      return;
-    }
-    if (cmd || e.altKey) return;
-    if (e.key === " ") {
+    if (e.altKey) return;
+    if (e.code === "Space") {
       e.preventDefault();
       Editor.space = true;
-      View.canvas.style.cursor = "grab";
+      return;
     }
-    if (e.key === "Escape") {
+    if (Editor.space) {
+      const actions = {
+        w: () => cycleLayer(-1),
+        s: () => cycleLayer(1),
+        z: () => cycleScan(-1),
+        c: () => cycleScan(1),
+        a: () => adjustBlend(-0.05),
+        d: () => adjustBlend(0.05),
+        q: () => adjustDrawing(-0.05),
+        e: () => adjustDrawing(0.05),
+      };
+      if (actions[key]) {
+        e.preventDefault();
+        actions[key]();
+      }
+      return;
+    }
+    if (key === "escape") {
       e.preventDefault();
       setTool("select");
     }
-    if (e.key === "Delete" || e.key === "Backspace") {
+    if (key === "delete" || key === "backspace") {
       e.preventDefault();
       deleteSelected();
     }
-    if (e.key === "Enter" && Editor.tool === "trace") finishTrace();
+    if (key === "enter" && Editor.tool === "trace") finishTrace();
     const tool = { v: "select", c: "component", t: "trace", b: "via", m: "measure" }[key];
     if (tool) setTool(tool);
     if (key === "f") fitBoard();
   });
   document.addEventListener("keyup", (e) => {
-    if (e.key === " ") {
+    if (e.code === "Space") {
       Editor.space = false;
       updateCursor();
     }
@@ -812,51 +986,49 @@ document.addEventListener("DOMContentLoaded", () => {
   wireCanvas();
   wireKeyboard();
   $("new").onclick = newProject;
-  $("open").onclick = requestOpen;
-  $("save").onclick = () => prepareSave(false);
-  $("save-as").onclick = () => prepareSave(true);
+  $("open").onclick = openProject;
+  $("save").onclick = prepareSave;
   $("undo").onclick = () => runHistory(false);
   $("redo").onclick = () => runHistory(true);
   $("fit").onclick = fitBoard;
+  $("import-project").onclick = () => {
+    $("project-input").value = "";
+    $("project-input").click();
+  };
+  $("project-input").onchange = (e) => {
+    if (e.target.files[0]) importExistingProject(e.target.files[0]);
+  };
+  $("scan-input").onchange = (e) => {
+    if (e.target.files[0]) importScanFile(e.target.files[0], importLayerId);
+  };
+  $("cancel-import").onclick = () => ImportJob.cancel?.();
   $("project-name").oninput = () => {
     Editor.fieldDirty = true;
     refreshSaveState();
   };
   $("project-name").onchange = (e) => {
     Editor.fieldDirty = false;
-    change(() => {
-      const name = e.target.value.trim();
-      if (!name) throw new Error("Enter a project name.");
-      State.name = name;
-    });
+    change(() => (State.name = e.target.value.trim() || "Untitled board"));
   };
   document
     .querySelectorAll("[data-tool]")
     .forEach((b) => (b.onclick = () => setTool(b.dataset.tool)));
-  document
-    .querySelectorAll("[data-import]")
-    .forEach((b) => (b.onclick = () => choosePhoto(b.dataset.import)));
-  document
-    .querySelectorAll("[data-view]")
-    .forEach((b) => (b.onclick = () => setView(b.dataset.view)));
-  $("draw-side").onchange = (e) => {
-    if (Editor.trace.length) finishTrace();
-    View.drawSide = e.target.value;
-    if (View.side !== "both") setView(View.drawSide);
+  $("primary-scan").onchange = (e) => setPrimaryScan(Number(e.target.value));
+  $("comparison-scan").onchange = (e) => {
+    View.comparisonId = e.target.value ? Number(e.target.value) : null;
+    View.blend = 0.5;
+    syncViewControls();
+    renderLayers();
     requestRender();
   };
-  for (const side of ["front", "back"]) {
-    const input = $(side + "-opacity");
-    input.oninput = () => {
-      Editor.fieldDirty = true;
-      refreshSaveState();
-    };
-    input.onchange = () => {
-      Editor.fieldDirty = false;
-      const l = State.layers.find((l) => l.side === side);
-      if (l) change(() => (l.opacity = Number(input.value)));
-    };
-  }
+  $("blend").oninput = (e) => {
+    View.blend = Number(e.target.value);
+    requestRender();
+  };
+  $("drawing-opacity").oninput = (e) => {
+    View.drawingOpacity = Number(e.target.value);
+    requestRender();
+  };
   for (const key of ["components", "traces", "vias"])
     $("show-" + key).onchange = (e) => {
       View[key] = e.target.checked;
@@ -868,11 +1040,9 @@ document.addEventListener("DOMContentLoaded", () => {
     View.grid = e.target.checked;
     requestRender();
   };
-  $("photo-input").onchange = (e) => {
-    if (e.target.files[0]) importPhoto(e.target.files[0], importSide);
-  };
   for (const kind of ["bom", "ai"])
     $("export-" + kind).onclick = () => {
+      if (Editor.drag) cancelDrag();
       if (Editor.trace.length >= 2) finishTrace();
       exportFile(kind);
       $("export-menu").open = false;

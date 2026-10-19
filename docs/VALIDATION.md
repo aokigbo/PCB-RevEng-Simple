@@ -1,78 +1,56 @@
 # Validation record
 
-Validated locally on 2026-10-05, including datasheets, AI package export, selection, copy/paste and anchored resizing.
+Local validation on 2026-10-19 for the multilayer directory-project refactor.
 
-## Result
+## Automated coverage
 
-- `npm test`: all 42 unit cases pass across geometry, connectivity, documents,
-  alignment, export structure and file handling.
-- `npm run test:browser`: passes in headless desktop Chrome with no page errors.
-- `npm run format:check`: passes; `git diff --check`: passes.
-- All scripts referenced by the entry page exist. No IndexedDB, OPFS, localStorage,
-  external API calls or removed subsystem hooks remain in the production scripts.
+- 31 unit cases cover stable layers, reorder/delete, board-unit geometry,
+  arbitrary-layer collisions, continuous via spans, drilled pad semantics, exact
+  endpoint anchors, selection/copy/datasheet preservation, v1 migration, alignment,
+  flips, cache eviction/concurrency/stale results, directory persistence and PDF files.
+- Browser workflows use desktop Chrome and native temporary directory handles.
+  The OS folder picker is substituted deterministically; production continues to
+  use user-selected read/write folders.
+- The browser imports real synthetic TIFFs: stripped RGB, tiled Deflate, stripped
+  LZW, and BigTIFF. It checks L0 pixels, edge sizes and pyramid dimensions. The
+  compressed and BigTIFF fixtures compare every L0 pixel against the source pattern.
+- New/Open/Save, multiple scans, view state isolation, comparison, Space navigation,
+  normal versus modified wheel behavior, components, copy/paste, shared PDF files,
+  and streaming AI ZIP contents are exercised through the browser.
+- Alignment reference/target picking, preview without mutation, apply/undo/redo,
+  explicit flips, drag reorder confirmation, layer deletion/undo, cancellation,
+  and v1 import into a separate folder are exercised. Legacy conversion preserves
+  mirrored pad positions and explicit barrel connectivity, and PDF opening reads
+  the migrated project file.
+- Unit persistence tests verify metadata-only saves, transactional invalid Open,
+  missing manifests leaving copper inspectable, external metadata modification
+  protection, shared PDF replace/remove/undo and restricted asset cleanup.
+- Cache tests check weighted memory, recent access, eviction/close, hard limits,
+  bounded concurrent reads, stale result disposal, and native versus overview LOD.
 
-The browser test imports front/back synthetic board photographs through the file
-input, calibrates scale, aligns matching points, places parts, edits values,
-traces copper, adds a through via and back-side trace, names GND, creates/resizes a
-custom pad, uses conventional undo/redo, saves twice to the same chosen handle,
-reopens the saved JSON with images, and downloads an AI package ZIP.
-It also verifies that a project-name edit is visibly Unsaved before leaving the
-field and that Ctrl+S commits it.
+## Checks
 
-The six persistence unit cases cover repeat Save without another picker, write
-failure, picker cancellation, concurrent edits during a write, external file
-modification and invalid Open preserving the current document and handle.
+```sh
+npm test
+npm run test:browser
+npm run format:check
+git diff --check
+```
 
-The direct-resizing browser workflow verifies fixed opposite corners, all four
-rotated/back-side body corners, untouched copper during body resizing, pad contact
-changes on release, one history entry per drag, undo/redo and Escape cancellation.
-It exercises circular SMD/plated pads, a fixed drill and minimum copper margin,
-Space/middle-button panning over handles, interior component/pad movement, trace
-vertex editing, zoomed handles and save/reopen of the final geometry. Screenshots
-of selected body and pad handles were inspected. Unit coverage also checks old
-scale migration, equivalent world geometry and idempotent normalization.
+Browser artifacts are generated under the selected `TEST_OUTPUT` path. Development
+fixtures are created in memory; no multi-gigabyte images are committed.
 
-The selection browser workflow opens a three-component fixture through the normal
-Open command and verifies full-containment marquees, pads inside bodies, parent
-canonicalization, mixed group movement and deletion, and exactly one undo entry
-per edit. Attached endpoints follow moved pads while intermediate bends stay put.
-It verifies Ctrl/Cmd copy and paste, fresh identities/references/pin numbers, no
-copied net assignments or traces, relative spacing and same-parent pad paste.
-Free and Shift-constrained body/pad resizing keep their opposite corners anchored;
-body offsets and trace attachments survive save/reopen. Pin labels and their absence
-on group selections are checked as canvas text, with formatting covered separately
-by a unit test. New/Open clears the internal clipboard. AI package export succeeds.
+## Practical qualification limits
 
-## Initial size reduction
+The tests demonstrate the bounded architecture and correctness on manageable
+fixtures. They do not establish end-to-end throughput or memory measurements for
+a real 10–15 GB board on an 8 GB computer. Scanner variants beyond the tested RGB
+fixtures, physical photo quality, alignment landmark quality, OS-native permissions,
+and disk exhaustion during very large imports still warrant manual qualification.
 
-The following records the initial simplification, before direct resizing was added.
-Measure only runtime JS, HTML and CSS actually loaded by the entry page; exclude
-both old large sample/library assets and new development dependencies/tests/docs.
-
-| Measure                |  Upstream | Simplified |
-| ---------------------- | --------: | ---------: |
-| Loaded source files    |        50 |         12 |
-| Formatted source lines |    23,641 |      3,988 |
-| Source bytes           | 1,155,225 |    118,724 |
-
-That is about 83% fewer lines and 90% fewer source bytes. The deleted application
-modules and old sample/library assets are retained in the local Git history.
-
-## Practical limits
-
-The test file pickers use deterministic handles, rather than driving OS-native
-Open/Save dialogs. Saved file contents and their full application round trip are
-verified; native picker permissions remain a manual desktop check.
-
-The datasheet browser workflow attaches one PDF to two components and verifies
-SHA-256 deduplication. It replaces one copy with a different PDF of the same name,
-checks Undo/Redo and Remove/Undo, opens a PDF in a new tab, saves and reopens the
-single JSON project, then verifies PDF bytes and distinct ZIP paths. It confirms
-connectivity warnings appear in both graph and context, and that corrupt embedded
-PDF checksums reject Open without replacing the current project. The ZIP is
-unpacked and checked for its expected files and omitted physical coordinates.
-
-Tests use synthetic photographs and a small reconstruction. They do not establish
-accuracy for perspective-distorted photographs or performance on very large scans
-and dense boards. No deployment or GitHub Actions run is claimed by these local
-checks.
+TIFF block limits prevent oversized strips/tiles from silently allocating full
+scans. PNG/JPEG imports are capped at 32 megapixels, PDFs at 64 MiB, legacy JSON at
+256 MiB, and project metadata Open at 32 MiB. Save uses ordinary browser atomic
+writable-file semantics, with a modification check; it cannot eliminate an external
+write racing the final close. Missing tiles are detected when viewed, not by an
+expensive startup traversal.

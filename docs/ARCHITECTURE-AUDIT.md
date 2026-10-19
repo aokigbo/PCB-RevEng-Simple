@@ -1,64 +1,66 @@
-# Simplification audit
+# Multilayer architecture
 
-Inspected upstream `gamerpaddy/PCB-RevEng` at `f820cc3` before implementation.
-The original tracked JS/HTML/CSS total is 23,647 lines. Classic scripts share
-global state and require ordered loading; there are no runtime package dependencies.
+The v2 refactor replaces the former two-sided embedded-file model. The source of
+truth is a portable project directory. Physical depth, visual evidence, engineering
+geometry and transient view state have distinct responsibilities.
 
-## Current architecture and decisions
+| Module           | Responsibility                                                                                 |
+| ---------------- | ---------------------------------------------------------------------------------------------- |
+| document.js      | v2 schema, stable physical layers, ordered via spans, board-unit geometry, lightweight history |
+| legacy-import.js | isolated validation/conversion of v1 and the existing supported upstream subset                |
+| files.js         | folder handles, transactional metadata open/save, asset files, safe explicit cleanup           |
+| image-pyramid.js | pyramid/manifest rules and cancellable import coordinator                                      |
+| image-worker.js  | windowed TIFF decode, sequential PNG tile/pyramid writes, completion marker last               |
+| tile-cache.js    | viewport/LOD requests, bounded concurrency, stale generations, weighted LRU and bitmap release |
+| registration.js  | forward/inverse scan transforms, explicit flips, 3–5 point least-squares similarity            |
+| geometry.js      | board-unit component/pad geometry and copper collision primitives                              |
+| connectivity.js  | per-physical-layer collision passes sharing one union node per via                             |
+| canvas.js        | at most two tiled scans and active-layer reconstruction, independent interaction overlays      |
+| editor.js        | selection, move/copy/paste, corner resize, layer-aware endpoint anchors and tool gestures      |
+| workspace.js     | layer/scan stack, inspectors, view controls, alignment preview, shortcuts and HUD              |
+| attachments.js   | hash-deduplicated PDF files and normal browser viewing                                         |
+| export.js        | BOM and one derived electrical model for Markdown/JSON, streamed ZIP output                    |
+| catalog.js       | small adapted parametric package catalog, materialized into explicit board-unit geometry       |
 
-| Module / feature                                          | Classification      | Dependency and removal risk                                                                                                                                                                                                                                                          |
-| --------------------------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `state.js`: objects, nets, IDs, history, serialization    | CORE / SIMPLIFY     | Board aliases, schematic wires, net protection, selective history and persistence are entangled. Separate the document from derived connectivity and session state.                                                                                                                  |
-| `footprints/*`, `view/geom.js`                            | CORE                | Rotation, back-side mirroring, pad extents and through-hole semantics directly determine connectivity. Retain and test the geometry. Reduce generators to a small catalog; persist explicit pad geometry.                                                                            |
-| `view/core`, `render`, `draw`, `hittest`, `overlays`      | KEEP BUT SIMPLIFY   | Rendering depends on UI selection, tool modes, split panes and schematic helpers. Retain geometry, pan/zoom and hit testing; remove split/X-ray/notes/ratsnest settings.                                                                                                             |
-| `tools/core`, `select`, `ops`                             | KEEP BUT SIMPLIFY   | Selection mixes pad editing, schematic jumps, notes, cutting, locking and calculators. One Select tool should move objects and trace vertices and inspect/edit pads.                                                                                                                 |
-| `tools/trace`, `via`, `checker`, state net registry       | CORE                | Copper contact and names currently use several distinct merge/overlap policies and modal decisions. Preserve side-aware pad geometry; recompute physical connected components after changes, including deletion. Conflicting names must remain visible and block misleading exports. |
-| `align.js`, image layers                                  | KEEP BUT SIMPLIFY   | Crop, perspective warp, deskew and rotation have shared image-history hooks. Replace interaction modes with two-point calibration and two corresponding-point pairs for similarity alignment. Mirror the back photograph explicitly.                                                 |
-| `imagetiles.js`                                           | UNSURE / DEPENDENCY | Helps large scans, but depends on the old layer draw pipeline. Remove only with the old renderer; large-image performance remains a documented limit to verify on representative scans.                                                                                              |
-| `autosave.js`, `projects.js`                              | REMOVE / REPLACE    | IndexedDB/OPFS, snapshots, ZIPs, URL/paste sharing and welcome pages obscure the source of truth. Browser data must never be mistaken for a disk save. Use file handles and mark saved only after successful close.                                                                  |
-| `netlist.js`                                              | KEEP BUT SIMPLIFY   | The first section exports connectivity; most of the file implements schematic symbols/layout/export. Retain netlist escaping and BOM CSV, remove schematic logic.                                                                                                                    |
-| `schematic.js`, `boards.js`, `netstab.js`                 | REMOVE              | Board arrays alias active collections and nets span boards. Legacy multi-board and schematic-rich documents cannot be silently flattened. Reject unsupported conversions and preserve originals.                                                                                     |
-| `ai.js`, `multiplayer.js`                                 | REMOVE              | Hooks wrap editing, permissions and saves; remove corresponding event wiring/state, not just scripts.                                                                                                                                                                                |
-| EAGLE/GENCAD/EasyEDA/Gerber import, resolver              | REMOVE              | Repair/import data and external formats are outside photo reconstruction. Project-file import remains.                                                                                                                                                                               |
-| Layer stack/3D, inner layers, blind vias                  | REMOVE              | Constrain the new model to front/back and through vias; reject incompatible old documents.                                                                                                                                                                                           |
-| Footprint search/library, quick-add parser, custom import | REMOVE              | Small generators plus directly editable custom pads replace search, library assets and alternate placement paths.                                                                                                                                                                    |
-| Key rebinding, selective history, notes, calculators      | REMOVE              | Remove their controls, settings, data and dead documentation.                                                                                                                                                                                                                        |
+## Electrical truth
 
-## Proposed UI
+Pads and traces participate on one stable layer ID. A visible drill is geometry
+only. A via is one conductor on all depth-ordered layers between its endpoints.
+Each layer gets a geometry collision sweep; touching objects union their conductor
+nodes. Names remain metadata on copper and never create virtual connections.
+Reordering warns if via membership changes. Layer deletion adjusts endpoint spans
+and removes collapsed vias. Copy/resize/move preserve the existing direct editing
+model and layer-aware exact endpoint anchors.
 
-One workspace: project name and Saved/Unsaved indicator with New/Open/Save/Save As
-and Export at the top; Select, Component, Trace, Via, Measure on the left; the board
-canvas in the center; a context-sensitive properties panel on the right. Bottom
-controls select Front/Back/Both, image opacity, visibility, grid and fit/zoom.
-Image setup and alignment use the same properties panel. No project dashboard,
-schematic tab, modal footprint picker or configurable hotkey system.
+## Memory and disk
 
-## Proposed document and persistence
+No runtime full-size bitmap is created for a large TIFF. A dedicated preprocessing
+worker uses a pinned local geotiff.js build, a two-worker decode pool and uncached
+windowed reads. Source blocks are checked before decoding. L0 writes exact RGB
+pixels into 512-pixel PNG tiles; later levels combine four child tiles at a time.
+The completion manifest is written last. Cancellation terminates preprocessing and
+leaves no scan metadata adoption. Incomplete folders are safe to ignore/clean.
 
-Versioned, indented `.pcbrev` JSON, one board, two optional embedded image data URLs,
-explicit component/pad geometry, traces, vias, names attached to conductors, scale.
-Runtime image objects, selection, pointer modes, undo history and file handles are
-not serialized. Physical nets are derived from geometry. Embedded photos make the
-document self-contained and suitable for an Obsidian folder.
+Rendering chooses a level from zoom and scan scale, inverse-transforms the viewport,
+and requests only intersecting tiles for primary and optional comparison. Four
+concurrent tile reads, a 64-entry scheduling batch and request generations prevent
+rapid navigation from accumulating decode work. The weighted LRU targets 512 MiB,
+with a 1 GiB ceiling, and closes discarded/evicted bitmaps.
 
-File System Access API on localhost/HTTPS in desktop Chrome/Edge: Open obtains a
-handle; Save writes back to that handle; Save As obtains a new handle. Canceled or
-failed writes must not change the saved checkpoint or current handle. Concurrent
-edits during a write must remain unsaved. New/Open guard unsaved changes; validate
-and decode a candidate document before replacing the active document. Legacy
-conversions always start without an overwrite handle and require Save As.
-Unsupported browsers get an explicit requirement message, not a fake disk-save.
+Save only rewrites engineering metadata. Undo references files on disk rather than
+cloning image/PDF data. Cleanup is explicit and limited to app-owned numeric scan
+folders and hash-named PDF files, with current/history/clipboard references retained.
+AI ZIP output reads PDF streams sequentially and awaits destination writes.
 
-## Incremental implementation and checks
+## Validation limits
 
-1. Add this inventory and regression tests for preserved pad geometry and exports.
-2. Extract the small core; add physical connectivity, file validation and linear
-   history tests while the old application remains available in Git history.
-3. Consolidate editing into one workspace using the tested core and direct file
-   handles. Test image alignment and save/open failure/cancel behavior.
-4. Delete removed subsystems, assets, state, styles and obsolete docs. Replace the
-   deployment-only workflow with checks; deployment remains explicit.
-5. Exercise the browser workflow from photographs through calibration, alignment,
-   components, custom pads, traces, vias, net naming, undo, save/reopen and export.
-   Record actual validation and limitations; do not claim external CAD validation
-   unless the target application is available and run.
+The implementation checks metadata, manifests and on-demand files, without reading
+every tile at startup. Synthetic stripped, tiled, Deflate, LZW and BigTIFF fixtures
+exercise import and full-resolution pixels. Large compressed/decompressed TIFF
+blocks are rejected rather than exceeding import budgets. PNG/JPEG import and PDF
+size have conservative caps. Actual throughput/storage usage on a 15 GB board and
+an 8 GB computer remain a manual hardware qualification task.
+
+No stored AI graph, account service, backend, multi-user system, manufacturing
+output, perspective warp, automatic trace recognition or built-in PDF viewer is
+introduced. The only remaining front/back interpretation lives in legacy import.

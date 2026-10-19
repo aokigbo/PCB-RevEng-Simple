@@ -2,14 +2,14 @@
 
 const Connectivity = { nets: [], byKey: new Map(), issues: [] };
 const pinKey = (c, p) => "p" + c.id + ":" + p.num;
-const through = (p) => p.shape === "circle" && p.tht !== false;
+const hasDrill = (p) => p.shape === "circle" && p.tht !== false;
 function conductors() {
   const out = [];
   for (const c of State.components)
     for (const p of c.pins) {
       const corners = padCornersWorld(c, p),
         wp = pinWorldPos(c, p),
-        r = (p.w * State.pxPerMm) / 2;
+        r = (p.w * 1) / 2;
       const box =
         p.shape === "circle"
           ? { minX: wp.x - r, maxX: wp.x + r, minY: wp.y - r, maxY: wp.y + r }
@@ -20,7 +20,7 @@ function conductors() {
         c,
         p,
         object: p,
-        sides: through(p) ? 3 : c.side === "front" ? 1 : 2,
+        layers: [c.layerId],
         box,
       });
     }
@@ -29,7 +29,7 @@ function conductors() {
       key: "t" + t.id,
       type: "trace",
       object: t,
-      sides: t.side === "front" ? 1 : 2,
+      layers: [t.layerId],
       box: bounds(t.points, t.width / 2),
     });
   for (const v of State.vias)
@@ -37,7 +37,7 @@ function conductors() {
       key: "v" + v.id,
       type: "via",
       object: v,
-      sides: 3,
+      layers: viaLayerIds(v),
       box: { minX: v.x - v.r, maxX: v.x + v.r, minY: v.y - v.r, maxY: v.y + v.r },
     });
   return out;
@@ -56,7 +56,7 @@ function bounds(points, grow = 0) {
   return { minX: minX - grow, minY: minY - grow, maxX: maxX + grow, maxY: maxY + grow };
 }
 function copperTouches(a, b) {
-  if (!(a.sides & b.sides)) return false;
+  if (!a.layers.some((id) => b.layers.includes(id))) return false;
   const x = a.box,
     y = b.box,
     eps = 1e-7;
@@ -108,15 +108,18 @@ function rebuildConnectivity() {
     }
     return i;
   };
-  // Sweep by left edge: far apart copper never needs a detailed geometry check.
-  const sorted = items
-    .map((item, i) => ({ item, i }))
-    .sort((a, b) => a.item.box.minX - b.item.box.minX);
-  let active = [];
-  for (const b of sorted) {
-    active = active.filter((a) => a.item.box.maxX + 1e-7 >= b.item.box.minX);
-    for (const a of active) if (copperTouches(a.item, b.item)) parent[root(b.i)] = root(a.i);
-    active.push(b);
+  // One union node per conductor, reused in each participating layer pass.
+  for (const layer of State.physicalLayers) {
+    const sorted = items
+      .map((item, i) => ({ item, i }))
+      .filter((o) => o.item.layers.includes(layer.id))
+      .sort((a, b) => a.item.box.minX - b.item.box.minX);
+    let active = [];
+    for (const b of sorted) {
+      active = active.filter((a) => a.item.box.maxX + 1e-7 >= b.item.box.minX);
+      for (const a of active) if (copperTouches(a.item, b.item)) parent[root(b.i)] = root(a.i);
+      active.push(b);
+    }
   }
   const groups = new Map();
   items.forEach((o, i) => {
