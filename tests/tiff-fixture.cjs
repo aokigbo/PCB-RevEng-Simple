@@ -15,7 +15,7 @@ function lzwLiteral(bytes) {
 module.exports = function makeTiff(
   width,
   height,
-  { tiled = false, compression = 1, big = false } = {},
+  { tiled = false, compression = 1, big = false, metadataPadding = 0 } = {},
 ) {
   const bw = tiled ? 256 : width,
     bh = tiled ? 256 : 32,
@@ -46,7 +46,7 @@ module.exports = function makeTiff(
     nextSize = big ? 8 : 4,
     ifd = header,
     bits = ifd + countSize + count * entrySize + nextSize,
-    offsets = bits + 6,
+    offsets = bits + 6 + metadataPadding,
     counts = offsets + n * 4,
     pixels = counts + n * 4;
   const buffer = Buffer.alloc(pixels + chunks.reduce((n, c) => n + c.length, 0));

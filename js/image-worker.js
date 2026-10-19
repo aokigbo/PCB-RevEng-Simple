@@ -58,7 +58,9 @@ self.onmessage = async ({ data: { file, id, root } }) => {
         throw new Error(
           "This TIFF uses oversized strips/tiles. Re-save it as a tiled TIFF or with shorter strips (under 128 MiB decoded per block).",
         );
-      const compressed = fd.getValue("TileByteCounts") || fd.getValue("StripByteCounts") || [];
+      // These tables may live outside the initially loaded TIFF directory.
+      const compressed =
+        (await fd.loadValue("TileByteCounts")) || (await fd.loadValue("StripByteCounts")) || [];
       if (Array.from(compressed).some((n) => n > 128 * 1024 * 1024))
         throw new Error(
           "A compressed TIFF block exceeds the 128 MiB import limit. Re-save with smaller strips or tiles.",

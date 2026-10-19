@@ -95,6 +95,9 @@ const tiff = require("./tiff-fixture.cjs");
       ["tiled-deflate", { tiled: true, compression: 8 }],
       ["stripped-lzw", { compression: 5 }],
       ["big-tiff", { big: true }],
+      ["deferred-strips", { metadataPadding: 8192 }],
+      ["deferred-tiles", { tiled: true, compression: 8, metadataPadding: 8192 }],
+      ["deferred-big-tiff", { big: true, metadataPadding: 8192 }],
     ]) {
       await upload({
         name: name + ".tif",
