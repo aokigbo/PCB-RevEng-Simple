@@ -171,21 +171,38 @@ module.exports = async ({ page, png, tiff, clickWorld, freshFolder }) => {
   );
   const dragPositions = await page.evaluate(() => {
     window.layerDragEvents = [];
-    for (const type of ["dragstart", "drop", "dragend"])
-      document.getElementById("layer-stack").addEventListener(type, (e) => {
-        layerDragEvents.push({
-          type,
-          layer: e.target.closest(".layer-row")?.dataset.layerId,
-          value: e.dataTransfer.getData("text/plain"),
-        });
-      });
+    for (const type of ["pointerdown", "pointerup", "dragstart", "drop", "dragend"])
+      document.addEventListener(
+        type,
+        (e) => {
+          layerDragEvents.push({
+            type,
+            layer: e.target.closest(".layer-row")?.dataset.layerId,
+            tag: e.target.tagName,
+            cls: e.target.className,
+            x: e.clientX,
+            y: e.clientY,
+            draggable: e.target.closest(".layer-row")?.draggable,
+            value: e.dataTransfer?.getData("text/plain"),
+          });
+        },
+        true,
+      );
     return [2, 1].map((id) => {
       const row = document.querySelector(`.layer-row[data-layer-id="${id}"]`),
         r = row.getBoundingClientRect(),
         name = row.querySelector(".layer-name").getBoundingClientRect(),
         menu = row.querySelector(".layer-menu").getBoundingClientRect();
       // Grab the row's gap, not either nested button (whose drag behavior differs by platform).
-      return { x: (name.right + menu.left) / 2 - r.left, y: r.height / 2 };
+      const pos = { x: (name.right + menu.left) / 2 - r.left, y: r.height / 2 };
+      layerDragEvents.push({
+        row: id,
+        rect: r.toJSON(),
+        pos,
+        draggable: row.draggable,
+        hit: document.elementFromPoint(r.left + pos.x, r.top + pos.y)?.outerHTML,
+      });
+      return pos;
     });
   });
   await page

@@ -291,11 +291,13 @@ const tiff = require("./tiff-fixture.cjs");
     console.error("Browser errors:", errors);
     console.error(
       "Layer drag:",
-      await page.evaluate(() => ({
-        events: window.layerDragEvents,
-        layers: State.physicalLayers.map((l) => l.id),
-        busy: ProjectFile.busy,
-      })),
+      JSON.stringify(
+        await page.evaluate(() => ({
+          events: window.layerDragEvents,
+          layers: State.physicalLayers.map((l) => l.id),
+          busy: ProjectFile.busy,
+        })),
+      ),
     );
     console.error(
       "Toast:",
