@@ -85,5 +85,28 @@ token but never geometry, scan transforms, connectivity, history or project JSON
 Fit computes bounds after the camera rotation. Grid and tile planning invert all
 four viewport corners. Marquee retains screen coordinates and tests containment
 of projected body/pad corners against the dragged rectangle, equivalent to a
-convex world quadrilateral. Resize cursors follow projected corner directions.
+convex world quadrilateral. Via circles and trace round caps are contained in
+screen space including their full radius/half-width. Resize cursors follow projected corner directions.
 Wheel always zooms; Space drag pans in screen pixels and Space+Z/C selects scans.
+
+## Pad arrays, through-pins and group resizing
+
+`pad-array.js` builds at most 2,000 normal component-local pins per component.
+Settings and drag preview live only in `Editor.mode`; Enter/Place commits once.
+No permanent array object, IDs, file asset or per-layer pad duplication is added.
+
+`pinLayerIds` reuses via span ordering. `pinCopperShapes` exposes the owning-layer
+contact and the round barrel in its explicit span. Rendering, selection, snapping
+and collision detection consume the same shapes. Connectivity keeps one union
+node per pin and checks the applicable shapes on each layer, so inner-layer
+contact joins the pin once. Visual drill flags alone never imply conduction.
+Reorder confirmation counts vias and connector pins; deletion shortens/collapses
+barrels on surviving components. Optional barrel validation retains format v3.
+
+One geometry-bounds utility includes body/pad outlines, barrel/via radii and trace
+width. Canonical selection removes duplicate child pads. Group resizing uses
+original geometry snapshots shared per owning object, a fixed opposite anchor and
+one final Undo checkpoint. Unselected exact trace endpoints follow moved anchors
+on every participating layer; selected traces transform fully. Round copper,
+traces and angled rectangles constrain scaling uniformly. Axis-aligned rectangular
+groups allow free X/Y scaling, with local axes exchanged for 90° components.

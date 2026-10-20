@@ -7,21 +7,14 @@ function conductors() {
   const out = [];
   for (const c of State.components)
     for (const p of c.pins) {
-      const corners = padCornersWorld(c, p),
-        wp = pinWorldPos(c, p),
-        r = (p.w * 1) / 2;
-      const box =
-        p.shape === "circle"
-          ? { minX: wp.x - r, maxX: wp.x + r, minY: wp.y - r, maxY: wp.y + r }
-          : bounds(corners);
       out.push({
         key: pinKey(c, p),
         type: "pad",
         c,
         p,
         object: p,
-        layers: [c.layerId],
-        box,
+        layers: pinLayerIds(c, p),
+        box: bounds(pinGeometryPoints(c, p)),
       });
     }
   for (const t of State.traces)
@@ -55,8 +48,14 @@ function bounds(points, grow = 0) {
   }
   return { minX: minX - grow, minY: minY - grow, maxX: maxX + grow, maxY: maxY + grow };
 }
-function copperTouches(a, b) {
-  if (!a.layers.some((id) => b.layers.includes(id))) return false;
+function copperTouches(a, b, layerId) {
+  const layers =
+    layerId === undefined
+      ? a.layers.filter((id) => b.layers.includes(id))
+      : a.layers.includes(layerId) && b.layers.includes(layerId)
+        ? [layerId]
+        : [];
+  if (!layers.length) return false;
   const x = a.box,
     y = b.box,
     eps = 1e-7;
@@ -67,15 +66,24 @@ function copperTouches(a, b) {
     y.maxY + eps < x.minY
   )
     return false;
+  for (const id of layers) {
+    const shapes = (o) =>
+      o.type === "pad" ? pinCopperShapes(o.c, o.p, id).map((p) => ({ ...o, p })) : [o];
+    for (const x of shapes(a))
+      for (const y of shapes(b)) if (copperShapesTouch(x, y, eps)) return true;
+  }
+  return false;
+}
+function copperShapesTouch(a, b, eps) {
   if (a.type === "pad" && b.type === "pad") return padsOverlap(a.c, a.p, b.c, b.p, eps);
   if (a.type === "pad" && b.type === "via")
     return pinEdgeDist(a.c, a.p, b.object.x, b.object.y) <= b.object.r + eps;
-  if (a.type === "via" && b.type === "pad") return copperTouches(b, a);
+  if (a.type === "via" && b.type === "pad") return copperShapesTouch(b, a, eps);
   if (a.type === "via" && b.type === "via")
     return (
       Math.hypot(a.object.x - b.object.x, a.object.y - b.object.y) <= a.object.r + b.object.r + eps
     );
-  if (a.type === "trace" && b.type !== "trace") return copperTouches(b, a);
+  if (a.type === "trace" && b.type !== "trace") return copperShapesTouch(b, a, eps);
   if (b.type === "trace") {
     const t = b.object;
     for (let j = 1; j < t.points.length; j++) {
@@ -117,7 +125,8 @@ function rebuildConnectivity() {
     let active = [];
     for (const b of sorted) {
       active = active.filter((a) => a.item.box.maxX + 1e-7 >= b.item.box.minX);
-      for (const a of active) if (copperTouches(a.item, b.item)) parent[root(b.i)] = root(a.i);
+      for (const a of active)
+        if (copperTouches(a.item, b.item, layer.id)) parent[root(b.i)] = root(a.i);
       active.push(b);
     }
   }

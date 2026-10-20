@@ -16,7 +16,13 @@ function isDirty() {
     : State.components.length + State.scans.length + State.traces.length + State.vias.length > 0;
 }
 function hasPendingWork() {
-  return isDirty() || Editor.fieldDirty || Editor.trace.length || Editor.drag?.before;
+  return (
+    isDirty() ||
+    Editor.fieldDirty ||
+    Editor.trace.length ||
+    Editor.drag?.before ||
+    (Editor.mode?.kind === "pad-array" && Editor.mode.preview.length)
+  );
 }
 async function readJSON(dir, name) {
   const h = await dir.getFileHandle(name),

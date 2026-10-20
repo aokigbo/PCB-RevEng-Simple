@@ -9,9 +9,11 @@ Save writes engineering edits; there is no browser autosave.
 
 Physical layers describe actual PCB depth. L1/L2/L3 labels follow their order.
 Click a layer row to work there, use its ⋯ button to edit its description or delete
-it, and drag rows to reorder. Reordering asks before changing any via's physical
+it, and drag rows to reorder. Reordering asks before changing a via or through-pin's physical
 span. Deleting a layer asks about the affected scans, components and traces; via
-spans are shortened or removed if fewer than two layers remain. Undo restores it.
+and through-pin spans are shortened or removed if fewer than two layers remain.
+Removing a barrel leaves its surviving component pin as a normal pad. Components
+owned by the deleted layer are deleted with that layer. Undo restores the edit.
 
 Use + Add image inside a layer to choose a TIFF. The app copies it into the project
 with progress and Cancel, then reads image information. There is no full-image
@@ -59,7 +61,27 @@ Custom components allow manually placed pads. No calibration is required.
 
 Pads use Name | Number labels. Select one to edit its number, name, local
 position, dimensions and shape. A visible hole does not connect through the board.
-Add an explicit via at the pin to represent an established barrel connection.
+Choose **Physical type → Through-board pin** to add an explicit continuous barrel,
+or place an independent via at the pin. Through-pins have From/To layer, Outer
+diameter and Hole diameter controls; the hole must be smaller than the diameter.
+The ordinary contact stays on the component's layer, and the round barrel appears
+on each layer in its span. It is one electrical pin: touching copper on any of
+those layers joins that pin's net. Different pins can have different spans.
+
+Select a component and choose **Add pad array**. Set rows/columns, numbering,
+start pin/increment, physical type, shape and dimensions. Numbering supports
+row-major, column-major, serpentine and **Around perimeter / DIP** (two columns).
+For 24 rows × 2 columns starting at 1, DIP numbers the left column 1–24 and the
+right column 48–25. Existing pin numbers must remain unique. A component may have
+at most 2,000 pins.
+
+Drag between the first and last pin centers on the photograph. Spacing is evenly
+distributed along the component's local axes, including when the component or
+scene is rotated. A single row/column uses only the corresponding drag dimension.
+Release to inspect the preview, then press Enter or **Place array**; Escape or
+**Cancel array** discards it. Settings and preview do not edit the project.
+The finished pins are ordinary pads with no permanent array relationship.
+Through-board mode creates one barrel per pin, not duplicate pads per layer.
 
 Trace clicks start/add vertices; click copper or press Enter to finish. Escape
 cancels unfinished work. Double-click a segment to insert a vertex. Select and
@@ -70,15 +92,31 @@ Place one via, then set its From layer and To layer in Properties. It appears on
 every layer in that continuous physical span and joins touching copper there.
 Moving it changes its one global position. Exactly attached endpoints on all its
 participating layers follow; other bends stay fixed. Components and pads similarly
-carry exact endpoint anchors on their own layer only.
+carry exact endpoint anchors on their contact/barrel layers. Intermediate
+unselected trace bends stay fixed; selected traces move or scale fully.
 
-Drag empty space to select fully enclosed components/pads. Whole bodies supersede
-individual child pads. Move or delete a group in one undo step. Copy/paste preserves
+Drag empty space to select fully enclosed components, pads, vias and complete
+trace strokes on the active layer. Trace width and via radius count toward
+containment. Hidden geometry is excluded, and screen-space containment follows
+scene rotation. Whole bodies supersede individual child pads.
+
+A mixed group has one world-space bounding box including protruding pads,
+barrels, via radii and trace widths. Drag a shared corner to resize with the
+opposite corner fixed. Rectangular groups allow separate X/Y scaling; Shift keeps
+proportions. Groups containing traces, round pads, vias, barrels or angled parts
+use uniform scaling so round copper stays round and angled rectangles are not
+sheared. Component rotations, identities, datasheets and layer/span IDs stay
+unchanged. Component-local pin positions, dimensions, holes and barrel dimensions
+scale together. An entire drag is one Undo operation; Escape cancels it.
+
+Move or delete a group in one undo step. Copy/paste preserves
 source layers, spacing, component values, pin labels and datasheet relationships,
 while generating new references/IDs and clearing copied net assignments. Traces
 are not copied. A copied standalone pad remains on its original parent.
 
-Single body/pad corner handles keep the opposite corner fixed. Shift preserves
+Single body/pad corner handles keep the opposite corner fixed. Body-only resizing
+does not reposition pins or barrels. A through-pin selected on an inner layer
+resizes its barrel; its surface contact dimensions remain unchanged. Shift preserves
 aspect ratio. Round geometry stays round, and pad drills keep their diameter.
 Escape cancels a drag. Undo/redo is conventional and grouped by completed edit.
 

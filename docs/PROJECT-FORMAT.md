@@ -25,7 +25,7 @@ IDs are positive unique integers across object collections. `nextId` exceeds all
 current IDs. Physical-layer array order defines depth; displayed L1/L2 numbering
 is derived from this order. Components and traces retain stable `layerId` values
 when the physical stack is reordered. A reorder requires confirmation when a
-via's effective participating layers change.
+via or connector pin's effective participating layers change.
 
 ## Board geometry
 
@@ -36,10 +36,24 @@ conversion only and never changes geometry.
 A component contains `id`, unique `ref`, `value`, `footprint` (package description),
 `layerId`, `x`, `y`, `rot` (degrees), `body`, `pins` and optional `datasheetId`.
 Body geometry is `{x,y,w,h,shape?}` in local board units. Pin geometry is
-`{num,name?,x,y,w,h,shape,tht?,hole?,netName?}` in the same local units. Component
+`{num,name?,x,y,w,h,shape,tht?,hole?,netName?,barrel?}` in the same local units. Component
 rotation maps local coordinates into the board; no physical layer automatically
 mirrors component geometry. Round pads have equal dimensions. `hole` is a diameter;
 `tht` is retained only as a visual drill flag and has no cross-layer electrical meaning.
+
+An optional pin `barrel` is `{fromLayerId,toLayerId,diameter,hole}`. Its endpoints
+must be distinct existing layer IDs, diameter positive and `0 <= hole < diameter`.
+The pin has its regular pad contact on the component's layer and a round barrel
+on every layer between the endpoints, inclusive. Both geometries share the same
+local pin center and a single conductor/net identity. No barrel means an ordinary
+layer-local pad, including existing drilled-looking pads; no migration is needed.
+Layer reorder uses current physical order. Deleting an endpoint shortens the
+surviving span; fewer than two remaining span layers removes only the barrel.
+Deleting a component's owning layer still deletes that component as before.
+
+Arrays are a creation tool only: generated pins use the normal schema above.
+Group selection, resize bounds and array settings/previews are transient editor
+state and are never serialized. Undo records metadata for each complete edit.
 
 A trace contains `id`, `layerId`, `width` and two or more `{x,y}` `points`.
 A via contains `id`, global `x`, `y`, `r`, `hole` (both radii), `fromLayerId`,

@@ -31,8 +31,9 @@ access when creating or opening a project.
    layer and adjust **Blend**. **Drawing opacity** fades the reconstruction.
 5. Select a scan's **⋯** properties to flip or align it against any other scan
    using 3–5 matching landmarks. Preview before applying. Only that scan moves.
-6. Place components and pads, trace copper, and add vias with explicit layer spans.
-   Calibration is optional and only changes displayed units.
+6. Place components and pads, or use **Add pad array** for repeated contacts and
+   through-board connector pins. Trace copper and add vias with explicit layer
+   spans. Calibration is optional and only changes displayed units.
 7. Attach component PDFs. Identical files share one hash-named file on disk.
 8. **Save / Ctrl+S** writes only `project.json`. Export a BOM CSV or an AI ZIP with
    electrical context, a net-centric graph, warnings and referenced PDFs.
@@ -75,6 +76,13 @@ Wheel always zooms, including while Space is held. Fit keeps the current rotatio
 
 All inspection actions have visible mouse controls. Conventional New/Open/Save,
 copy/paste, undo/redo and Select/Component/Trace/Via/Measure shortcuts remain.
+
+Marquee selects fully enclosed components, pads, traces and vias on the active
+layer. Mixed selections have one shared resize box; an entire drag is one Undo.
+Through-board pins use an explicit barrel span, so touching inner-layer copper
+joins the same logical pin. A visible drill hole alone remains layer-local.
+Pad arrays support row-major, column-major, serpentine and two-column DIP numbering.
+Drag to preview; Enter or **Place array** commits, and Escape cancels.
 
 ## Memory and data integrity
 

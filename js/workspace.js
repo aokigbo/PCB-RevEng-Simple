@@ -35,11 +35,11 @@ function field(parent, label, value, onChange, options = {}) {
   }
   input.value = value ?? "";
   input.addEventListener("input", () => {
-    Editor.fieldDirty = true;
+    if (!options.transient) Editor.fieldDirty = true;
     refreshSaveState();
   });
   input.addEventListener("change", () => {
-    Editor.fieldDirty = false;
+    if (!options.transient) Editor.fieldDirty = false;
     let v = input.value;
     if (input.type === "number") {
       v = Number(v);
@@ -324,11 +324,13 @@ function renderLayers() {
       if (index < 0) return;
       ids.splice(index, 0, from);
       try {
-        reorderLayers(ids, (n) =>
+        reorderLayers(ids, (n, pins) =>
           confirm(
             "Reordering changes the physical span of " +
               n +
-              " vias and may change connectivity. Reorder layers?",
+              " vias and " +
+              pins +
+              " connector pins and may change connectivity. Reorder layers?",
           ),
         );
         afterEdit();
@@ -479,6 +481,183 @@ function componentToolInspector(panel) {
       ". Catalog proportions are a starting point; resize the body and pads directly.",
   );
 }
+function padArrayInspector(panel, m) {
+  panel.append(el("h2", "Pad array"));
+  paragraph(
+    panel,
+    "Add pins to " +
+      m.component.ref +
+      ". Drag from the first pin center to the last; release to preview, Enter to place.",
+  );
+  const fields = el("div", undefined, "pad-array-fields");
+  panel.append(fields);
+  const s = m.settings,
+    set = (key, value, refresh = false) => {
+      s[key] = value;
+      updateArrayPreview(m);
+      if (refresh) renderInspector();
+    },
+    number = (label, key, min, max, integer = false) =>
+      field(fields, label, s[key], (v) => set(key, v), {
+        type: "number",
+        min,
+        max,
+        integer,
+        transient: true,
+      }),
+    choose = (label, key, choices, refresh = false) => {
+      const input = field(
+        fields,
+        label,
+        String(s[key]),
+        (v) => set(key, ["fromLayerId", "toLayerId"].includes(key) ? Number(v) : v, refresh),
+        { choices, transient: true },
+      );
+      if (!["fromLayerId", "toLayerId"].includes(key))
+        input.parentElement.classList.add("array-wide");
+      return input;
+    },
+    size = (label, key, min = 0.001) => {
+      const factor = State.calibration?.boardUnitsPerMm || 1;
+      field(
+        fields,
+        label + (State.calibration ? " (mm)" : " (units)"),
+        s[key] / factor,
+        (v) => set(key, v * factor),
+        { type: "number", min: min / factor, max: 1e7 / factor, transient: true },
+      );
+    };
+  number("Rows", "rows", 1, 2000, true);
+  number("Columns", "columns", 1, 2000, true);
+  choose("Numbering", "numbering", [
+    ["row", "Row-major"],
+    ["column", "Column-major"],
+    ["serpentine", "Serpentine"],
+    ["dip", "Around perimeter / DIP"],
+  ]);
+  number("Start pin", "startPin", -1e9, 1e9, true);
+  number("Increment", "increment", -1e6, 1e6, true);
+  choose(
+    "Physical type",
+    "physicalType",
+    [
+      ["surface", "Surface pads"],
+      ["through", "Through-board pins"],
+    ],
+    true,
+  );
+  choose(
+    "Array pad shape",
+    "shape",
+    [
+      ["rect", "Rectangle"],
+      ["circle", "Circle"],
+    ],
+    true,
+  );
+  size("Pad width", "w");
+  if (s.shape !== "circle") size("Pad height", "h");
+  if (s.physicalType === "through") {
+    choose("From layer", "fromLayerId", layerChoices());
+    choose("To layer", "toLayerId", layerChoices());
+    size("Outer diameter", "diameter");
+    size("Hole diameter", "hole", 0);
+  }
+  const status = el(
+    "p",
+    m.error ||
+      (m.preview.length
+        ? m.preview.length + " pins ready · Enter to place"
+        : "Drag between the first and last pin centers."),
+    "hint",
+  );
+  status.id = "pad-array-status";
+  status.setAttribute("role", "status");
+  panel.append(status);
+  const place = button(panel, "Place array", commitPadArray, "primary");
+  place.id = "place-pad-array";
+  place.disabled = !m.preview.length || ProjectFile.busy;
+  button(panel, "Cancel array", () => {
+    if (Editor.drag) cancelDrag();
+    inspect("component", m.component);
+    updateHint();
+    updateCursor();
+  });
+}
+function pinBarrelInspector(panel, c, p) {
+  field(
+    panel,
+    "Physical type",
+    p.barrel ? "through" : "surface",
+    (v) =>
+      modifySelected(() => {
+        if (v === "surface") delete p.barrel;
+        else {
+          if (State.physicalLayers.length < 2) throw new Error("Add another physical layer first.");
+          const diameter = Math.min(p.w, p.h);
+          p.barrel = {
+            fromLayerId: State.physicalLayers[0].id,
+            toLayerId: State.physicalLayers.at(-1).id,
+            diameter,
+            hole: diameter * 0.4,
+          };
+        }
+      }),
+    {
+      choices: [
+        ["surface", "Surface pad"],
+        ["through", "Through-board pin"],
+      ],
+    },
+  );
+  const b = p.barrel;
+  if (!b) return;
+  for (const [key, label] of [
+    ["fromLayerId", "From layer"],
+    ["toLayerId", "To layer"],
+  ])
+    field(
+      panel,
+      label,
+      String(b[key]),
+      (v) =>
+        modifySelected(() => {
+          const id = Number(v);
+          if (id === b[key === "fromLayerId" ? "toLayerId" : "fromLayerId"])
+            throw new Error("A through-board pin must span at least two physical layers.");
+          b[key] = id;
+        }),
+      { choices: layerChoices() },
+    );
+  dimension(panel, "Outer diameter", b.diameter, (v) =>
+    modifySelected(() => {
+      if (v <= b.hole) throw new Error("Outer diameter must be larger than the hole.");
+      b.diameter = v;
+    }),
+  );
+  dimension(
+    panel,
+    "Hole diameter",
+    b.hole,
+    (v) =>
+      modifySelected(() => {
+        if (v >= b.diameter) throw new Error("Hole must be smaller than the outer diameter.");
+        b.hole = v;
+      }),
+    0,
+    b.diameter,
+  );
+  paragraph(
+    panel,
+    "One conductive pin through " +
+      viaLayerIds(b)
+        .map((id) => layerName(id))
+        .join(" → ") +
+      ". The round barrel is visible on each participating layer; the contact belongs to " +
+      layerName(c.layerId) +
+      ".",
+  );
+}
 function beginAlignment(target, referenceId, count) {
   if (!referenceId || referenceId === target.id) return;
   if (View.activeLayerId !== target.layerId) activateLayer(target.layerId);
@@ -623,7 +802,7 @@ function selectionInspector(panel, s) {
               layerName(o.id, true) +
               "? This deletes " +
               counts +
-              " and adjusts or removes affected vias.",
+              " and shortens or removes affected via and through-pin spans.",
           )
         )
           return;
@@ -678,6 +857,13 @@ function selectionInspector(panel, s) {
       );
     datasheetInspector(panel, o);
     panel.append(el("h3", "Pads"));
+    const actions = el("div", undefined, "row");
+    panel.append(actions);
+    button(actions, "Add pad", () => {
+      Editor.padTarget = o;
+      updateHint();
+    });
+    button(actions, "Add pad array", () => startPadArray(o));
     o.pins.forEach((p, index) =>
       button(
         panel,
@@ -690,10 +876,6 @@ function selectionInspector(panel, s) {
         "block-button",
       ),
     );
-    button(panel, "Add pad", () => {
-      Editor.padTarget = o;
-      updateHint();
-    });
   } else if (s.type === "pad") {
     const p = o.pins[s.index];
     panel.append(el("h2", o.ref + " · Pad " + p.num));
@@ -706,6 +888,7 @@ function selectionInspector(panel, s) {
       }),
     );
     field(panel, "Pin name", p.name || "", (v) => modifySelected(() => (p.name = v)));
+    pinBarrelInspector(panel, o, p);
     field(
       panel,
       "Pad shape",
@@ -742,7 +925,7 @@ function selectionInspector(panel, s) {
         ["x", "y"].includes(key) ? -1e10 : 0.001,
       );
     }
-    if (p.shape === "circle") {
+    if (p.shape === "circle" && !p.barrel) {
       checkbox(panel, "Visible drill hole", hasDrill(p), (v) =>
         modifySelected(() => {
           p.tht = v;
@@ -760,10 +943,11 @@ function selectionInspector(panel, s) {
           p.w,
         );
     }
-    paragraph(
-      panel,
-      "A hole is visual geometry. Use an explicit via for cross-layer connectivity.",
-    );
+    if (!p.barrel)
+      paragraph(
+        panel,
+        "A visible hole is visual geometry. Choose Through-board pin or add an explicit via for cross-layer connectivity.",
+      );
     netInspector(panel, pinKey(o, p));
   } else if (s.type === "trace") {
     panel.append(el("h2", "Trace"));
@@ -821,9 +1005,26 @@ function renderInspector() {
     alignmentInspector(panel, Editor.mode);
     return;
   }
+  if (Editor.mode?.kind === "pad-array") {
+    padArrayInspector(panel, Editor.mode);
+    return;
+  }
   if (isGroupSelection()) {
     panel.append(el("h2", selectionItems().length + " items selected"));
-    paragraph(panel, "Move, copy/paste or delete this group.");
+    const items = selectionItems(),
+      b = selectionGeometryBounds(items);
+    paragraph(
+      panel,
+      "Drag a shared corner to resize. The opposite corner stays fixed. " +
+        (groupNeedsUniformScale(items)
+          ? "Uniform scaling preserves traces, round copper and angled parts."
+          : "Shift keeps proportions; otherwise width and height scale separately."),
+    );
+    paragraph(
+      panel,
+      "Bounds: " + formatDistance(b.maxX - b.minX) + " × " + formatDistance(b.maxY - b.minY),
+    );
+    paragraph(panel, "Move or delete the whole group. Copy/paste includes components and pads.");
     button(panel, "Delete selected", deleteSelected);
   } else if (Editor.selection) selectionInspector(panel, Editor.selection);
   else if (Editor.tool === "component") componentToolInspector(panel);
@@ -938,6 +1139,11 @@ function wireKeyboard() {
       return;
     }
     if (e.altKey) return;
+    if (Editor.mode?.kind === "pad-array" && key === "enter") {
+      e.preventDefault();
+      commitPadArray();
+      return;
+    }
     if (e.code === "Space") {
       e.preventDefault();
       Editor.space = true;

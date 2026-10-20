@@ -81,6 +81,12 @@ function viaLayerIds(v, layers = State.physicalLayers) {
 function viaOnLayer(v, id) {
   return viaLayerIds(v).includes(id);
 }
+function pinLayerIds(c, p) {
+  return [...new Set([c.layerId, ...(p.barrel ? viaLayerIds(p.barrel) : [])])];
+}
+function pinOnLayer(c, p, id) {
+  return c.layerId === id || (!!p.barrel && viaOnLayer(p.barrel, id));
+}
 function reorderLayers(ids, approve = () => true) {
   if (
     ids.length !== State.physicalLayers.length ||
@@ -98,24 +104,49 @@ function reorderLayers(ids, approve = () => true) {
         .sort((a, b) => a - b)
         .join(),
   ).length;
-  if (changed && !approve(changed)) return false;
+  const changedPins = State.components
+    .flatMap((c) => c.pins)
+    .filter(
+      (p) =>
+        p.barrel &&
+        viaLayerIds(p.barrel)
+          .sort((a, b) => a - b)
+          .join() !==
+          viaLayerIds(p.barrel, layers)
+            .sort((a, b) => a - b)
+            .join(),
+    ).length;
+  if ((changed || changedPins) && !approve(changed, changedPins)) return false;
   return editDocument(() => {
     State.physicalLayers = layers;
   });
 }
 function deletePhysicalLayer(id) {
   if (State.physicalLayers.length < 2) throw new Error("Keep at least one physical layer.");
-  const spans = new Map(State.vias.map((v) => [v.id, viaLayerIds(v).filter((x) => x !== id)]));
+  const barrels = State.components
+      .flatMap((c) => c.pins)
+      .map((p) => p.barrel)
+      .filter(Boolean),
+    spans = new Map(
+      [...State.vias, ...barrels].map((v) => [v, viaLayerIds(v).filter((x) => x !== id)]),
+    );
   return editDocument(() => {
     State.physicalLayers = State.physicalLayers.filter((l) => l.id !== id);
     for (const key of ["scans", "components", "traces"])
       State[key] = State[key].filter((o) => o.layerId !== id);
-    State.vias = State.vias.filter((v) => spans.get(v.id).length >= 2);
+    State.vias = State.vias.filter((v) => spans.get(v).length >= 2);
     for (const v of State.vias) {
-      const s = spans.get(v.id);
+      const s = spans.get(v);
       v.fromLayerId = s[0];
       v.toLayerId = s.at(-1);
     }
+    for (const c of State.components)
+      for (const p of c.pins) {
+        if (!p.barrel) continue;
+        const s = spans.get(p.barrel);
+        if (s.length < 2) delete p.barrel;
+        else Object.assign(p.barrel, { fromLayerId: s[0], toLayerId: s.at(-1) });
+      }
   });
 }
 function nextRef(prefix) {
@@ -272,6 +303,15 @@ function validateDocument(input) {
       if (p.tht !== undefined && typeof p.tht !== "boolean") fail("drill flag");
       if (p.hole !== undefined) num(p.hole, "drill", 0, Math.min(p.w, p.h));
       if (p.shape === "circle" && p.w !== p.h) fail("round pad dimensions");
+      if (p.barrel !== undefined) {
+        const b = p.barrel;
+        if (!b || typeof b !== "object" || Array.isArray(b)) fail("pin barrel");
+        if (!layers.has(b.fromLayerId) || !layers.has(b.toLayerId) || b.fromLayerId === b.toLayerId)
+          fail("pin barrel span");
+        num(b.diameter, "pin barrel diameter", 1e-9);
+        num(b.hole, "pin barrel hole", 0, b.diameter);
+        if (b.hole >= b.diameter) fail("pin barrel hole must be smaller than its diameter");
+      }
     }
     delete c.kicad;
   }
@@ -352,7 +392,20 @@ function validateDocument(input) {
     ]);
     checkKeys(c.body, ["x", "y", "w", "h", "shape"]);
     for (const p of c.pins) {
-      checkKeys(p, ["num", "name", "x", "y", "w", "h", "shape", "tht", "hole", "netName"]);
+      checkKeys(p, [
+        "num",
+        "name",
+        "x",
+        "y",
+        "w",
+        "h",
+        "shape",
+        "tht",
+        "hole",
+        "netName",
+        "barrel",
+      ]);
+      if (p.barrel) checkKeys(p.barrel, ["fromLayerId", "toLayerId", "hole", "diameter"]);
       if (p.shape === "circle" && p.tht !== false) num(p.hole, "visible drill", 0, p.w);
     }
   }

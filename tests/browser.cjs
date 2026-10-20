@@ -283,6 +283,7 @@ const tiff = require("./tiff-fixture.cjs");
     await require("./browser-advanced.cjs")({ page, png, tiff, clickWorld, freshFolder });
     await require("./sparse-browser.cjs")({ page, tiff, freshFolder });
     await require("./rotation-browser.cjs")({ page, tiff, freshFolder, clickWorld, out });
+    await require("./selection-array-browser.cjs")({ page, freshFolder, clickWorld, out });
     assert.deepEqual(errors, []);
     console.log(
       "PASS: directory New/Open/Save, sparse TIFF source copy/lazy L0 pixels, multiple scans, view shortcuts, components/copy/datasheets and streaming AI ZIP.",

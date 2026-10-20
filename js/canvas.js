@@ -73,7 +73,7 @@ function layerVisible(id) {
   return View.activeLayerId === id;
 }
 function padVisible(c, p) {
-  return View.components && layerVisible(c.layerId);
+  return View.components && pinOnLayer(c, p, View.activeLayerId);
 }
 function selectedKey() {
   const s = Editor.selection;
@@ -161,9 +161,12 @@ function fitBoard() {
     ])
       points.push(imageToWorld(l, p));
   for (const c of State.components) {
-    if (!layerVisible(c.layerId)) continue;
-    const r = compRadius(c);
-    for (const x of [c.x - r, c.x + r]) for (const y of [c.y - r, c.y + r]) points.push({ x, y });
+    if (layerVisible(c.layerId))
+      points.push(...selectionGeometryPoints({ type: "component", object: c }));
+    else
+      for (const p of c.pins)
+        if (pinOnLayer(c, p, View.activeLayerId))
+          points.push(...pinGeometryPoints(c, p, View.activeLayerId));
   }
   for (const t of State.traces) if (layerVisible(t.layerId)) points.push(...t.points);
   for (const v of State.vias)
@@ -219,19 +222,21 @@ function renderComponent(ctx, c, ghost = false) {
   c.pins.forEach((p, i) => {
     if (!padVisible(c, p) && !ghost) return;
     const chosen = selectionContains("pad", c, i) || selected;
-    ctx.fillStyle = ghost ? "#87dabe99" : netColor(pinKey(c, p), c.layerId);
-    ctx.strokeStyle = chosen ? "#e1fff5" : "#27333d";
-    ctx.lineWidth = (chosen ? 2 : 0.7) / View.zoom / scale;
-    ctx.beginPath();
-    if (p.shape === "circle") ctx.arc(p.x, p.y, p.w / 2, 0, Math.PI * 2);
-    else ctx.rect(p.x - p.w / 2, p.y - p.h / 2, p.w, p.h);
-    ctx.fill();
-    ctx.stroke();
-    if (hasDrill(p)) {
-      ctx.fillStyle = "#111820";
+    for (const shape of pinCopperShapes(c, p, ghost ? undefined : View.activeLayerId)) {
+      ctx.fillStyle = ghost ? "#87dabe99" : netColor(pinKey(c, p), View.activeLayerId);
+      ctx.strokeStyle = chosen ? "#e1fff5" : "#27333d";
+      ctx.lineWidth = (chosen ? 2 : 0.7) / View.zoom / scale;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, p.hole / 2, 0, Math.PI * 2);
+      if (shape.shape === "circle") ctx.arc(shape.x, shape.y, shape.w / 2, 0, Math.PI * 2);
+      else ctx.rect(shape.x - shape.w / 2, shape.y - shape.h / 2, shape.w, shape.h);
       ctx.fill();
+      ctx.stroke();
+      if (hasDrill(shape)) {
+        ctx.fillStyle = "#111820";
+        ctx.beginPath();
+        ctx.arc(shape.x, shape.y, shape.hole / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
     }
   });
   ctx.restore();
@@ -302,7 +307,7 @@ function renderCanvas() {
   if (View.traces)
     for (const t of State.traces) {
       if (!layerVisible(t.layerId)) continue;
-      const selected = Editor.selection?.object === t;
+      const selected = selectionContains("trace", t);
       pathTrace(ctx, t.points);
       ctx.lineWidth = t.width;
       ctx.strokeStyle = netColor("t" + t.id, t.layerId);
@@ -312,10 +317,11 @@ function renderCanvas() {
         ctx.lineWidth = 1 / View.zoom;
         ctx.strokeStyle = "#fff";
         ctx.stroke();
-        t.points.forEach((p, i) => {
-          ctx.fillStyle = Editor.selection.vertex === i ? "#fff" : "#99e7cc";
-          ctx.fillRect(p.x - 3 / View.zoom, p.y - 3 / View.zoom, 6 / View.zoom, 6 / View.zoom);
-        });
+        if (!isGroupSelection())
+          t.points.forEach((p, i) => {
+            ctx.fillStyle = Editor.selection.vertex === i ? "#fff" : "#99e7cc";
+            ctx.fillRect(p.x - 3 / View.zoom, p.y - 3 / View.zoom, 6 / View.zoom, 6 / View.zoom);
+          });
       }
     }
   if (View.components) for (const c of State.components) renderComponent(ctx, c);
@@ -330,7 +336,7 @@ function renderCanvas() {
       ctx.beginPath();
       ctx.arc(v.x, v.y, v.hole, 0, Math.PI * 2);
       ctx.fill();
-      if (Editor.selection?.object === v) {
+      if (selectionContains("via", v)) {
         ctx.strokeStyle = "#e1fff5";
         ctx.lineWidth = 2 / View.zoom;
         ctx.beginPath();
@@ -384,7 +390,8 @@ function renderCanvas() {
     ctx.stroke();
   }
   const mode = Editor.mode;
-  if (mode) {
+  if (mode?.kind === "pad-array") renderPadArrayPreview(ctx, mode);
+  else if (mode) {
     const points =
       mode.kind === "align"
         ? mode.phase === "reference"
@@ -417,11 +424,15 @@ function renderCanvas() {
 }
 function selectionResizeCorners() {
   const s = Editor.selection;
-  if (Editor.tool !== "select" || Editor.mode || Editor.padTarget || !View.components || !s)
-    return [];
-  if (s.type === "component" && layerVisible(s.object.layerId)) return bodyCornersWorld(s.object);
+  if (Editor.tool !== "select" || Editor.mode || Editor.padTarget || !s) return [];
+  if (s.type === "group") return boxCorners(selectionGeometryBounds(selectionItems()));
+  if (s.type === "component" && View.components && layerVisible(s.object.layerId))
+    return bodyCornersWorld(s.object);
   if (s.type === "pad" && padVisible(s.object, s.object.pins[s.index]))
-    return padCornersWorld(s.object, s.object.pins[s.index]);
+    return padCornersWorld(
+      s.object,
+      pinCopperShapes(s.object, s.object.pins[s.index], View.activeLayerId)[0],
+    );
   return [];
 }
 function resizeHandleAt(p) {
@@ -469,7 +480,12 @@ function hitTest(p) {
   if (View.components)
     for (const c of [...State.components].reverse())
       for (let i = 0; i < c.pins.length; i++)
-        if (padVisible(c, c.pins[i]) && pinEdgeDist(c, c.pins[i], p.x, p.y) < tol)
+        if (
+          padVisible(c, c.pins[i]) &&
+          pinCopperShapes(c, c.pins[i], View.activeLayerId).some(
+            (shape) => pinEdgeDist(c, shape, p.x, p.y) < tol,
+          )
+        )
           return { type: "pad", object: c, index: i };
   if (View.traces)
     for (const t of [...State.traces].reverse())
@@ -495,9 +511,14 @@ function snapPoint(p, anySide = false, excludeTrace = null) {
   };
   for (const c of State.components)
     for (const pad of c.pins)
-      if (c.layerId === View.activeLayerId) {
+      if (pinOnLayer(c, pad, View.activeLayerId)) {
         const wp = pinWorldPos(c, pad);
-        if (pinEdgeDist(c, pad, p.x, p.y) === 0) return wp;
+        if (
+          pinCopperShapes(c, pad, View.activeLayerId).some(
+            (shape) => pinEdgeDist(c, shape, p.x, p.y) === 0,
+          )
+        )
+          return wp;
         take(wp);
       }
   for (const v of State.vias) if (viaOnLayer(v, View.activeLayerId)) take(v);

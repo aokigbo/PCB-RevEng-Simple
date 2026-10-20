@@ -75,3 +75,24 @@ component/via placement, trace drawing and vertex edits, screen marquee, measure
 board-coordinate readout and screen-relative panning run at each quarter turn.
 Both ordinary and Space-held wheel events zoom, including during pan; Space+Z/C
 continue cycling scans. Rotated TIFF requests retain the sparse source/cache path.
+
+## Selection, arrays and through-pins — 2026-10-20
+
+Tests cover mixed marquee containment at 0°, 30° and all quarter turns, hidden
+geometry, full trace widths, true via circles and component/pad canonicalization.
+Shared bounds include protruding contacts and barrels. Group tests check uniform
+mixed scaling, free local-axis scaling, exact attached endpoints across layers,
+stable rotations/spans, one Undo, redo and cancelled drags.
+
+Array tests generate 1×8, 2×24 and 4×4 layouts with each applicable numbering mode.
+They verify DIP 1–24/48–25 numbering, local spacing, uniqueness, limits and invalid
+settings. A through array creates 48 pins/barrels and no duplicate vias or pins.
+Connectivity tests include inner-layer traces, other pads/through-pins/vias,
+non-touching/outside contact geometry, ordinary visual holes, per-pin spans,
+reorder approval/cancellation, deletion/collapse and strict v3 round trips.
+
+Browser workflows exercise real drag previews under component and scene rotation,
+Enter/Place/Escape, no preview dirty state, one creation Undo, individual inner-pin
+editing/resize, inner-layer tracing, native layer reorder and save/reopen. Mixed
+marquee and group corner drags run at all four camera quarter turns, including
+fixed anchors, unchanged unselected bends, complete Undo/redo and Escape cancellation.

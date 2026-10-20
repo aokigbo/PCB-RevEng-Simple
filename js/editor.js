@@ -121,11 +121,42 @@ function marqueeSelection(a, b) {
         items.push({ type: "component", object: c });
       else
         c.pins.forEach((p, index) => {
-          if (padVisible(c, p) && contained(padCornersWorld(c, p)))
+          if (
+            padVisible(c, p) &&
+            pinCopperShapes(c, p, View.activeLayerId).every((shape) =>
+              shape.shape === "circle"
+                ? circleContained(pinWorldPos(c, shape), shape.w / 2)
+                : contained(padCornersWorld(c, shape)),
+            )
+          )
             items.push({ type: "pad", object: c, index });
         });
     }
+  function circleContained(center, radius) {
+    const p = worldToScreen(center.x, center.y),
+      r = radius * View.zoom;
+    return p.x - r >= box.minX && p.x + r <= box.maxX && p.y - r >= box.minY && p.y + r <= box.maxY;
+  }
+  if (View.vias)
+    for (const v of State.vias)
+      if (viaOnLayer(v, View.activeLayerId) && circleContained(v, v.r))
+        items.push({ type: "via", object: v });
+  if (View.traces)
+    for (const t of State.traces)
+      if (layerVisible(t.layerId) && t.points.every((p) => circleContained(p, t.width / 2)))
+        items.push({ type: "trace", object: t });
   return canonicalSelection(items);
+}
+function selectionRecords(selection = Editor.selection) {
+  const originals = new Map();
+  return selectionItems(canonicalSelection(selectionItems(selection))).map((s) => {
+    if (!originals.has(s.object)) originals.set(s.object, structuredClone(s.object));
+    return {
+      selection: s,
+      original: originals.get(s.object),
+      padPosition: s.type === "pad" ? pinWorldPos(s.object, s.object.pins[s.index]) : null,
+    };
+  });
 }
 function anchorsFor(selection) {
   const locations = [];
@@ -136,13 +167,19 @@ function anchorsFor(selection) {
       locations.push({
         before: pinWorldPos(o, p),
         after: () => pinWorldPos(o, p),
-        layers: [o.layerId],
+        layers: pinLayerIds(o, p),
       });
     if (s.type === "via")
       locations.push({ before: { x: o.x, y: o.y }, after: () => o, layers: viaLayerIds(o) });
   }
   const anchors = [];
-  for (const t of State.traces)
+  const selectedTraces = new Set(
+    selectionItems(selection)
+      .filter((s) => s.type === "trace")
+      .map((s) => s.object),
+  );
+  for (const t of State.traces) {
+    if (selectedTraces.has(t)) continue;
     for (const point of [t.points[0], t.points.at(-1)]) {
       const loc = locations.find(
         (loc) =>
@@ -151,6 +188,7 @@ function anchorsFor(selection) {
       );
       if (loc) anchors.push({ point, after: loc.after });
     }
+  }
   return anchors;
 }
 function applyAnchors(anchors) {
@@ -198,7 +236,7 @@ function deleteSelected() {
   if (special?.type === "physicalLayer") {
     if (
       confirm(
-        "Delete this physical layer and its scans, components and traces? Affected vias will be adjusted or removed.",
+        "Delete this physical layer and its scans, components and traces? Affected via and through-pin spans will be shortened or removed.",
       )
     ) {
       try {
@@ -328,6 +366,10 @@ function cancelDrag() {
     State = JSON.parse(d.before);
     Editor.selection = null;
   }
+  if (d.type === "pad-array" && Editor.mode?.kind === "pad-array") {
+    Editor.mode.start = Editor.mode.end = null;
+    Editor.mode.preview = [];
+  }
   Editor.drag = null;
   if (d.pointerId !== undefined && View.canvas.hasPointerCapture(d.pointerId))
     View.canvas.releasePointerCapture(d.pointerId);
@@ -338,10 +380,12 @@ function updateCursor() {
   View.canvas.style.cursor =
     Editor.drag?.type === "pan"
       ? "grabbing"
-      : Editor.drag?.type === "resize"
+      : ["resize", "group-resize"].includes(Editor.drag?.type)
         ? Editor.drag.cursor
-        : resizeHandleAt(Editor.cursor)?.cursor ||
-          (Editor.tool === "select" ? "default" : "crosshair");
+        : Editor.mode?.kind === "pad-array"
+          ? "crosshair"
+          : resizeHandleAt(Editor.cursor)?.cursor ||
+            (Editor.tool === "select" ? "default" : "crosshair");
 }
 function pointerDown(e) {
   if (e.button !== 0 && e.button !== 1) return;
@@ -357,19 +401,49 @@ function pointerDown(e) {
     return;
   }
   if (ProjectFile.busy || !ProjectFile.root) return;
+  if (Editor.mode?.kind === "pad-array") {
+    const m = Editor.mode;
+    m.start = m.end = worldToLocal(m.component, p.x, p.y);
+    m.preview = [];
+    Editor.drag = { type: "pad-array", pointerId: e.pointerId };
+    updateArrayPreview(m);
+    return;
+  }
   const handle = resizeHandleAt(p);
   if (handle) {
     const s = Editor.selection,
       o = s.object;
-    const pad = s.type === "pad" ? o.pins[s.index] : null;
+    if (s.type === "group") {
+      const items = selectionItems(canonicalSelection(s.items)),
+        corners = boxCorners(selectionGeometryBounds(items));
+      Editor.drag = {
+        type: "group-resize",
+        records: selectionRecords(s),
+        corner: corners[handle.cornerIndex],
+        anchor: corners[(handle.cornerIndex + 2) % 4],
+        uniform: groupNeedsUniformScale(items),
+        anchors: anchorsFor(s),
+        before: snapshot(),
+        start: p,
+        offset: { x: handle.corner.x - p.x, y: handle.corner.y - p.y },
+        cursor: handle.cursor,
+        pointerId: e.pointerId,
+      };
+      updateCursor();
+      return;
+    }
+    const pad = s.type === "pad" ? o.pins[s.index] : null,
+      barrel = !!(pad?.barrel && o.layerId !== View.activeLayerId),
+      shape = barrel ? pinCopperShapes(o, pad, View.activeLayerId)[0] : pad || o.body;
     const opposite = selectionResizeCorners()[(handle.cornerIndex + 2) % 4];
     Editor.drag = {
       type: "resize",
       selection: s,
       cornerIndex: handle.cornerIndex,
       anchorLocal: worldToLocal(o, opposite.x, opposite.y),
-      original: structuredClone(pad || o.body),
-      minimum: pad && hasDrill(pad) ? Math.max(0.01, pad.hole + 0.1) : 0.01,
+      original: structuredClone(shape),
+      barrel,
+      minimum: pad && hasDrill(shape) ? Math.max(0.01, shape.hole + 0.1) : 0.01,
       anchors: pad ? anchorsFor(s) : [],
       before: snapshot(),
       start: p,
@@ -474,11 +548,7 @@ function pointerDown(e) {
     type: "object",
     start: p,
     before: snapshot(),
-    records: selectionItems().map((s) => ({
-      selection: s,
-      original: structuredClone(s.object),
-      padPosition: s.type === "pad" ? pinWorldPos(s.object, s.object.pins[s.index]) : null,
-    })),
+    records: selectionRecords(),
     anchors: anchorsFor(Editor.selection),
     moved: false,
     pointerId: e.pointerId,
@@ -497,23 +567,44 @@ function pointerMove(e) {
     requestRender();
     return;
   }
+  if (d?.type === "pad-array") {
+    const m = Editor.mode;
+    m.end = worldToLocal(m.component, p.x, p.y);
+    updateArrayPreview(m);
+    return;
+  }
+  if (d?.type === "group-resize") {
+    if (!d.moved && Math.hypot(p.x - d.start.x, p.y - d.start.y) * View.zoom < 3) return;
+    d.moved = true;
+    const { sx, sy } = groupResizeFactors(
+      d.corner,
+      d.anchor,
+      { x: p.x + d.offset.x, y: p.y + d.offset.y },
+      d.uniform || e.shiftKey,
+    );
+    scaleSelectionRecords(d.records, d.anchor, sx, sy);
+    applyAnchors(d.anchors);
+    requestRender();
+    return;
+  }
   if (d?.type === "resize") {
     if (!d.moved && Math.hypot(p.x - d.start.x, p.y - d.start.y) * View.zoom < 3) return;
     d.moved = true;
     const s = d.selection,
       pad = s.type === "pad" ? s.object.pins[s.index] : null;
-    Object.assign(
-      pad || s.object.body,
-      resizeGeometry(
-        s.object,
-        { x: p.x + d.offset.x, y: p.y + d.offset.y },
-        d.anchorLocal,
-        d.original,
-        d.cornerIndex,
-        e.shiftKey,
-        d.minimum,
-      ),
+    const resized = resizeGeometry(
+      s.object,
+      { x: p.x + d.offset.x, y: p.y + d.offset.y },
+      d.anchorLocal,
+      d.original,
+      d.cornerIndex,
+      e.shiftKey,
+      d.minimum,
     );
+    if (d.barrel) {
+      Object.assign(pad, { x: resized.x, y: resized.y });
+      pad.barrel.diameter = resized.w;
+    } else Object.assign(pad || s.object.body, resized);
     applyAnchors(d.anchors);
     requestRender();
     return;
@@ -565,6 +656,11 @@ function pointerUp(e) {
   if (d?.type === "marquee") {
     Editor.selection = d.moved ? marqueeSelection(d.start, d.end) : null;
     renderInspector();
+    requestRender();
+  }
+  if (d?.type === "pad-array") {
+    renderInspector();
+    updateHint();
     requestRender();
   }
   if (d?.before) {
@@ -637,13 +733,15 @@ function updateHint() {
   const m = Editor.mode;
   if (m)
     text =
-      m.kind === "align"
-        ? m.phase === "reference"
-          ? "Reference landmarks: " + m.referencePoints.length + " / " + m.count
-          : m.phase === "target"
-            ? "Target landmarks in the same order: " + m.sourcePoints.length + " / " + m.count
-            : "Preview alignment, then Apply or Redo"
-        : "Choose two points on the board";
+      m.kind === "pad-array"
+        ? "Drag to preview the array · Enter places · Escape cancels"
+        : m.kind === "align"
+          ? m.phase === "reference"
+            ? "Reference landmarks: " + m.referencePoints.length + " / " + m.count
+            : m.phase === "target"
+              ? "Target landmarks in the same order: " + m.sourcePoints.length + " / " + m.count
+              : "Preview alignment, then Apply or Redo"
+          : "Choose two points on the board";
   document.getElementById("canvas-hint").textContent = text;
 }
 function wireCanvas() {

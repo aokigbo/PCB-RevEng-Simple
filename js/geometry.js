@@ -62,6 +62,116 @@ function bodyCornersWorld(comp) {
   return padCornersWorld(comp, { ...comp.body, x: comp.body.x || 0, y: comp.body.y || 0 });
 }
 
+// A pin has its ordinary contact on the component layer and a round barrel in its explicit span.
+// These are shapes of one electrical pin, never extra project objects.
+function pinCopperShapes(c, p, layerId) {
+  const shapes = layerId === undefined || c.layerId === layerId ? [p] : [];
+  if (p.barrel && (layerId === undefined || viaOnLayer(p.barrel, layerId)))
+    shapes.push({
+      x: p.x,
+      y: p.y,
+      w: p.barrel.diameter,
+      h: p.barrel.diameter,
+      shape: "circle",
+      tht: true,
+      hole: p.barrel.hole,
+    });
+  return shapes;
+}
+function boxCorners(b) {
+  return [
+    { x: b.minX, y: b.minY },
+    { x: b.maxX, y: b.minY },
+    { x: b.maxX, y: b.maxY },
+    { x: b.minX, y: b.maxY },
+  ];
+}
+function pinGeometryPoints(c, p, layerId) {
+  return pinCopperShapes(c, p, layerId).flatMap((shape) => {
+    if (shape.shape !== "circle") return padCornersWorld(c, shape);
+    return boxCorners(bounds([pinWorldPos(c, shape)], shape.w / 2));
+  });
+}
+function selectionGeometryPoints(s) {
+  const o = s.object;
+  if (s.type === "component")
+    return [...bodyCornersWorld(o), ...o.pins.flatMap((p) => pinGeometryPoints(o, p))];
+  if (s.type === "pad") return pinGeometryPoints(o, o.pins[s.index]);
+  if (s.type === "via") return boxCorners(bounds([o], o.r));
+  if (s.type === "trace") return boxCorners(bounds(o.points, o.width / 2));
+  return [];
+}
+function selectionGeometryBounds(items) {
+  return bounds(items.flatMap(selectionGeometryPoints));
+}
+
+// Non-uniform world-axis scaling would shear an angled rectangle; the model has no shear.
+function groupNeedsUniformScale(items) {
+  return items.some((s) => {
+    if (["via", "trace"].includes(s.type)) return true;
+    const c = s.object,
+      pads = s.type === "component" ? c.pins : [c.pins[s.index]];
+    return (
+      Math.abs(Math.sin((c.rot * Math.PI) / 90)) > 1e-8 ||
+      pads.some((p) => p.shape === "circle" || p.barrel)
+    );
+  });
+}
+function groupResizeFactors(corner, anchor, point, uniform) {
+  let sx = Math.max(0.001, Math.min(1e6, (point.x - anchor.x) / (corner.x - anchor.x))),
+    sy = Math.max(0.001, Math.min(1e6, (point.y - anchor.y) / (corner.y - anchor.y)));
+  if (uniform) sx = sy = Math.abs(sx - 1) >= Math.abs(sy - 1) ? sx : sy;
+  return { sx, sy };
+}
+function scaleSelectionRecords(records, anchor, sx, sy) {
+  const point = (p) => ({
+    x: anchor.x + (p.x - anchor.x) * sx,
+    y: anchor.y + (p.y - anchor.y) * sy,
+  });
+  const roundScale = Math.min(sx, sy);
+  const scalePad = (p, original, lx, ly) => {
+    p.w = original.w * lx;
+    p.h = original.h * ly;
+    if (original.hole !== undefined) p.hole = original.hole * roundScale;
+    if (original.barrel) {
+      p.barrel.diameter = original.barrel.diameter * roundScale;
+      p.barrel.hole = original.barrel.hole * roundScale;
+    }
+  };
+  for (const { selection: s, original: o, padPosition } of records) {
+    const target = s.object;
+    if (s.type === "trace") {
+      target.points = o.points.map(point);
+      target.width = o.width * roundScale;
+    } else if (s.type === "via") {
+      Object.assign(target, point(o), { r: o.r * roundScale, hole: o.hole * roundScale });
+    } else {
+      const a = (o.rot * Math.PI) / 180,
+        lx = Math.hypot(sx * Math.cos(a), sy * Math.sin(a)),
+        ly = Math.hypot(sx * Math.sin(a), sy * Math.cos(a));
+      if (s.type === "component") {
+        Object.assign(target, point(o));
+        Object.assign(target.body, {
+          x: (o.body.x || 0) * lx,
+          y: (o.body.y || 0) * ly,
+          w: o.body.w * lx,
+          h: o.body.h * ly,
+        });
+        target.pins.forEach((p, i) => {
+          p.x = o.pins[i].x * lx;
+          p.y = o.pins[i].y * ly;
+          scalePad(p, o.pins[i], lx, ly);
+        });
+      } else if (s.type === "pad") {
+        const p = target.pins[s.index],
+          q = point(padPosition);
+        Object.assign(p, worldToLocal(target, q.x, q.y));
+        scalePad(p, o.pins[s.index], lx, ly);
+      }
+    }
+  }
+}
+
 // Anchor and original dimensions are captured once when the corner drag starts.
 function resizeGeometry(
   comp,
