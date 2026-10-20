@@ -61,3 +61,17 @@ fixture, asserts two-row demand reads, FIFO permits, immediate queued cancellati
 and imports a real manageable one-row-strip TIFF in the full browser workflow.
 This validates the reported scan; a full 10–15 GB multi-scan session is still a
 separate hardware qualification task.
+
+## Scene rotation and wheel controls — 2026-10-20
+
+Camera round trips, cursor-anchored zoom and fitting are checked at 0°, 30°, 90°,
+180° and 270°. Tests verify center-preserving quarter turns, normalized angles,
+unchanged serialized engineering data/history/connectivity, viewport tile coverage,
+rotated resize cursors and marquee containment without world-box over-selection.
+
+The browser tests rotation buttons, HUD/angle controls, reset on Open, Fit and
+alignment at all four quarter turns. Component/pad selection, movement and resizing,
+component/via placement, trace drawing and vertex edits, screen marquee, measurement,
+board-coordinate readout and screen-relative panning run at each quarter turn.
+Both ordinary and Space-held wheel events zoom, including during pan; Space+Z/C
+continue cycling scans. Rotated TIFF requests retain the sparse source/cache path.

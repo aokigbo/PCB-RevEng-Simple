@@ -27,6 +27,12 @@ The first scan establishes the initial coordinate system, which survives its del
 
 ## Inspection and alignment
 
+**Scene rotation** in View turns the complete workspace in 90° steps. Reset returns
+to 0°. The point at the viewport center stays fixed. Fit works at the current
+rotation; pan stays screen-relative, and wheel always zooms even with Space held.
+This rotates the camera only: alignment, copper geometry, nets and saved project
+data remain unchanged. Opening a project resets scene rotation.
+
 The primary scan always belongs to the active layer. Comparison can be another
 scan from any layer. Blend at 0% shows primary; 100% shows comparison; near 50%
 shows both. Drawing opacity separately fades the components, pads, traces, vias
@@ -107,19 +113,19 @@ redo and clipboard references.
 
 ## Shortcuts
 
-| Action                                     | Shortcut                          |
-| ------------------------------------------ | --------------------------------- |
-| New / Open / Save                          | Ctrl+N / Ctrl+O / Ctrl+S          |
-| Undo / Redo                                | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y   |
-| Select / Component / Trace / Via / Measure | V / C / T / B / M                 |
-| Copy / Paste                               | Ctrl+C / Ctrl+V                   |
-| Delete selection / finish trace / cancel   | Delete / Enter / Escape           |
-| Previous / next physical layer             | Space+W / Space+S                 |
-| Previous / next scan in active layer       | Space+Z / Space+C, or Space+wheel |
-| Blend toward primary / comparison          | Space+A / Space+D                 |
-| Drawing opacity down / up                  | Space+Q / Space+E                 |
-| Pan                                        | Space+left drag, or middle drag   |
-| Zoom / fit                                 | Wheel / F                         |
+| Action                                     | Shortcut                        |
+| ------------------------------------------ | ------------------------------- |
+| New / Open / Save                          | Ctrl+N / Ctrl+O / Ctrl+S        |
+| Undo / Redo                                | Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y |
+| Select / Component / Trace / Via / Measure | V / C / T / B / M               |
+| Copy / Paste                               | Ctrl+C / Ctrl+V                 |
+| Delete selection / finish trace / cancel   | Delete / Enter / Escape         |
+| Previous / next physical layer             | Space+W / Space+S               |
+| Previous / next scan in active layer       | Space+Z / Space+C               |
+| Blend toward primary / comparison          | Space+A / Space+D               |
+| Drawing opacity down / up                  | Space+Q / Space+E               |
+| Pan                                        | Space+left drag, or middle drag |
+| Zoom / fit                                 | Wheel / F                       |
 
 Command is accepted instead of Ctrl on macOS. Inputs keep ordinary typing behavior.
 Space alone starts no drag or edit. A short HUD reports view adjustments. Every

@@ -602,3 +602,26 @@ main {
 #import-progress button {
   margin-left: 12px;
 }
+
+.scene-rotation-control {
+  margin-top: 12px;
+}
+.scene-rotation-control > span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.scene-rotation-buttons {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-top: 6px;
+}
+.scene-rotation-buttons button {
+  padding: 6px 9px;
+}
+#scene-rotation {
+  min-width: 38px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}

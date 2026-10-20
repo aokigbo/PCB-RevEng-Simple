@@ -59,14 +59,19 @@ Save As is superseded by normal folder copying outside the app.
 
 ## Inspection shortcuts
 
-| Action                                  | Shortcut                          |
-| --------------------------------------- | --------------------------------- |
-| Previous / next physical layer          | Space+W / Space+S                 |
-| Previous / next scan on active layer    | Space+Z / Space+C, or Space+wheel |
-| Image blend toward primary / comparison | Space+A / Space+D                 |
-| Drawing opacity down / up               | Space+Q / Space+E                 |
-| Pan                                     | Space+left drag, or middle drag   |
-| Zoom / fit                              | Wheel / F                         |
+| Action                                  | Shortcut                        |
+| --------------------------------------- | ------------------------------- |
+| Previous / next physical layer          | Space+W / Space+S               |
+| Previous / next scan on active layer    | Space+Z / Space+C               |
+| Image blend toward primary / comparison | Space+A / Space+D               |
+| Drawing opacity down / up               | Space+Q / Space+E               |
+| Pan                                     | Space+left drag, or middle drag |
+| Zoom / fit                              | Wheel / F                       |
+
+Use **Scene rotation** under View to turn the whole scene left/right by 90° or
+reset it. Rotation keeps the viewport center fixed, rotates images and copper
+together, and never changes alignment, geometry, connectivity or saved project data.
+Wheel always zooms, including while Space is held. Fit keeps the current rotation.
 
 All inspection actions have visible mouse controls. Conventional New/Open/Save,
 copy/paste, undo/redo and Select/Component/Trace/Via/Measure shortcuts remain.

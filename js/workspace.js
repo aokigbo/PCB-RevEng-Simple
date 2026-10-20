@@ -258,7 +258,12 @@ function dimension(parent, label, value, fn, min = 0.001, max = 1e10) {
 function layerChoices() {
   return State.physicalLayers.map((l) => [String(l.id), layerName(l.id, true)]);
 }
+function syncViewRotation() {
+  $("scene-rotation").textContent = View.rotation + "°";
+  $("reset-scene-rotation").disabled = View.rotation === 0;
+}
 function syncViewControls() {
+  syncViewRotation();
   normalizeView();
   const primary = $("primary-scan"),
     compare = $("comparison-scan");
@@ -895,6 +900,7 @@ function resetWorkspace() {
   View.primaryByLayer.clear();
   View.comparisonId = null;
   View.drawingOpacity = 1;
+  View.rotation = 0;
   View.activeLayerId = State.physicalLayers[0].id;
   setTool("select");
   afterEdit();
@@ -1000,6 +1006,9 @@ document.addEventListener("DOMContentLoaded", () => {
   $("project-input").onchange = (e) => {
     if (e.target.files[0]) importExistingProject(e.target.files[0]);
   };
+  $("rotate-scene-left").onclick = () => rotateView(-90);
+  $("rotate-scene-right").onclick = () => rotateView(90);
+  $("reset-scene-rotation").onclick = resetViewRotation;
   $("scan-input").onchange = (e) => {
     if (e.target.files[0]) importScanFile(e.target.files[0], importLayerId);
   };

@@ -109,14 +109,19 @@ function canonicalSelection(items) {
 }
 function marqueeSelection(a, b) {
   const items = [],
-    box = bounds([a, b]);
+    box = bounds([a, b]),
+    contained = (corners) =>
+      cornersContained(
+        box,
+        corners.map((p) => worldToScreen(p.x, p.y)),
+      );
   if (View.components)
     for (const c of State.components) {
-      if (layerVisible(c.layerId) && cornersContained(box, bodyCornersWorld(c)))
+      if (layerVisible(c.layerId) && contained(bodyCornersWorld(c)))
         items.push({ type: "component", object: c });
       else
         c.pins.forEach((p, index) => {
-          if (padVisible(c, p) && cornersContained(box, padCornersWorld(c, p)))
+          if (padVisible(c, p) && contained(padCornersWorld(c, p)))
             items.push({ type: "pad", object: c, index });
         });
     }
@@ -450,7 +455,7 @@ function pointerDown(e) {
   const hit = hitTest(p);
   if (!hit) {
     Editor.selection = null;
-    Editor.drag = { type: "marquee", start: p, end: p, pointerId: e.pointerId };
+    Editor.drag = { type: "marquee", start: pos, end: pos, pointerId: e.pointerId };
     renderInspector();
     requestRender();
     return;
@@ -514,8 +519,8 @@ function pointerMove(e) {
     return;
   }
   if (d?.type === "marquee") {
-    d.end = p;
-    if (Math.hypot(p.x - d.start.x, p.y - d.start.y) * View.zoom >= 3) d.moved = true;
+    d.end = pos;
+    if (Math.hypot(pos.x - d.start.x, pos.y - d.start.y) >= 3) d.moved = true;
     requestRender();
     return;
   }
@@ -654,10 +659,6 @@ function wireCanvas() {
     (e) => {
       e.preventDefault();
       const p = canvasPos(e);
-      if (Editor.space) {
-        cycleScan(e.deltaY > 0 ? 1 : -1);
-        return;
-      }
       zoomAt(p.x, p.y, Math.exp(-e.deltaY * 0.001));
     },
     { passive: false },

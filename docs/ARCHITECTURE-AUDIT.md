@@ -74,3 +74,16 @@ Tests use real manageable RGB TIFFs, deferred tags, LZW/Deflate, BigTIFF, page a
 SubIFD overviews. Synthetic correctness is not a 15 GB/8 GB hardware throughput or
 peak-memory qualification. No native code, image daemon, backend, GPU preprocessing,
 account system or cloud dependency is introduced.
+
+## Camera navigation
+
+World-to-screen is pan + rotated(world × zoom). Its exact inverse handles every
+pointer tool; zoom preserves the board point under the cursor and rotation
+preserves the viewport-center point. The canvas camera encloses scans, copper,
+grid, labels and interaction overlays. Scene rotation enters the viewport request
+token but never geometry, scan transforms, connectivity, history or project JSON.
+Fit computes bounds after the camera rotation. Grid and tile planning invert all
+four viewport corners. Marquee retains screen coordinates and tests containment
+of projected body/pad corners against the dragged rectangle, equivalent to a
+convex world quadrilateral. Resize cursors follow projected corner directions.
+Wheel always zooms; Space drag pans in screen pixels and Space+Z/C selects scans.

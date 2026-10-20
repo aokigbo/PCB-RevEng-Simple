@@ -31,19 +31,26 @@ module.exports = async ({ page, png, tiff, clickWorld, freshFolder }) => {
   assert.notEqual(await page.evaluate(() => View.canvas.style.cursor), "grab");
   assert.equal(await page.evaluate(() => Editor.drag), null);
   await page.mouse.wheel(0, 100);
-  await page.waitForFunction((id) => View.primaryByLayer.get(1) !== id, view.scan);
-  assert.equal(await page.evaluate(() => View.zoom), view.zoom);
+  await page.waitForFunction((zoom) => View.zoom !== zoom, view.zoom);
+  assert.equal(await page.evaluate(() => View.primaryByLayer.get(1)), view.scan);
+  await page.keyboard.press("c");
+  assert.notEqual(await page.evaluate(() => View.primaryByLayer.get(1)), view.scan);
+  await page.keyboard.press("z");
+  assert.equal(await page.evaluate(() => View.primaryByLayer.get(1)), view.scan);
   await page.keyboard.press("d");
   await page.keyboard.press("e");
   await page.keyboard.up("Space");
+  const panAfterWheel = await page.evaluate(() => ({ x: View.panX, y: View.panY }));
   await page.locator('.layer-row[data-layer-id="2"] .layer-name').click();
   assert.equal(await page.evaluate(() => View.comparisonId), null);
   await page.locator('.layer-row[data-layer-id="1"] .layer-name').click();
-  assert.equal(await page.evaluate(() => View.panX), view.x);
+  assert.equal(await page.evaluate(() => View.panX), panAfterWheel.x);
+  assert.equal(await page.evaluate(() => View.panY), panAfterWheel.y);
   assert.equal(await page.evaluate(() => snapshot()), baseline);
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const beforeNormalWheel = await page.evaluate(() => View.zoom);
   await page.mouse.wheel(0, -100);
-  await page.waitForFunction((zoom) => View.zoom !== zoom, view.zoom);
+  await page.waitForFunction((zoom) => View.zoom !== zoom, beforeNormalWheel);
   await page.evaluate(() => {
     View.panX = 350;
     View.panY = 240;
@@ -298,6 +305,6 @@ module.exports = async ({ page, png, tiff, clickWorld, freshFolder }) => {
   assert.equal(await page.evaluate(() => pdfMime), "application/pdf");
   await page.evaluate(() => (window.open = window.savedOpen));
   console.log(
-    "PASS: view isolation, Space/wheel navigation, calibration, alignment preview/apply/undo, flip, layer drag/delete, cancel and v1 directory migration/PDF opening.",
+    "PASS: view isolation, wheel zoom/Space navigation, calibration, alignment preview/apply/undo, flip, layer drag/delete, cancel and v1 directory migration/PDF opening.",
   );
 };

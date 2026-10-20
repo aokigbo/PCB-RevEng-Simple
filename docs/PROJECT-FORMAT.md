@@ -134,7 +134,7 @@ a session. Files remain on disk until explicit cleanup; cleanup also retains
 assets referenced by undo/redo and the component clipboard. Only numeric scan
 folder names and hash-named PDFs under the app-owned asset directories are eligible.
 
-Active physical layer, remembered primary scans, comparison, blend, drawing
+Active physical layer, remembered primary scans, comparison, blend, scene rotation, drawing
 opacity, selection, clipboard, alignment preview, zoom and pan are session state.
 They never mark the document dirty or appear in JSON.
 

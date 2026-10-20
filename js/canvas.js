@@ -6,6 +6,7 @@ const View = {
   width: 1,
   height: 1,
   zoom: 1,
+  rotation: 0,
   panX: 0,
   panY: 0,
   activeLayerId: 1,
@@ -37,11 +38,36 @@ const Editor = {
   fieldDirty: false,
   clipboard: null,
 };
+function cameraRotate(x, y, degrees = View.rotation) {
+  const a = (degrees * Math.PI) / 180,
+    c = Math.cos(a),
+    s = Math.sin(a);
+  return { x: x * c - y * s, y: x * s + y * c };
+}
 function worldToScreen(x, y) {
-  return { x: x * View.zoom + View.panX, y: y * View.zoom + View.panY };
+  const p = cameraRotate(x * View.zoom, y * View.zoom);
+  return { x: View.panX + p.x, y: View.panY + p.y };
 }
 function screenToWorld(x, y) {
-  return { x: (x - View.panX) / View.zoom, y: (y - View.panY) / View.zoom };
+  const p = cameraRotate(x - View.panX, y - View.panY, -View.rotation);
+  return { x: p.x / View.zoom, y: p.y / View.zoom };
+}
+function viewportWorldCorners() {
+  return [
+    [0, 0],
+    [View.width, 0],
+    [View.width, View.height],
+    [0, View.height],
+  ].map(([x, y]) => screenToWorld(x, y));
+}
+function marqueeWorldCorners(start, end) {
+  const b = bounds([start, end]);
+  return [
+    [b.minX, b.minY],
+    [b.maxX, b.minY],
+    [b.maxX, b.maxY],
+    [b.minX, b.maxY],
+  ].map(([x, y]) => screenToWorld(x, y));
 }
 function layerVisible(id) {
   return View.activeLayerId === id;
@@ -94,12 +120,35 @@ function resizeCanvas() {
   View.canvas.height = Math.round(r.height * dpr);
   requestRender();
 }
+function keepWorldAt(point, sx, sy) {
+  const projected = worldToScreen(point.x, point.y),
+    dx = sx - projected.x,
+    dy = sy - projected.y;
+  View.panX += dx;
+  View.panY += dy;
+  if (Editor.drag?.type === "pan") {
+    Editor.drag.x += dx;
+    Editor.drag.y += dy;
+  }
+}
 function zoomAt(sx, sy, factor) {
-  const p = screenToWorld(sx, sy);
+  const point = screenToWorld(sx, sy);
   View.zoom = Math.max(0.000001, Math.min(64, View.zoom * factor));
-  View.panX = sx - p.x * View.zoom;
-  View.panY = sy - p.y * View.zoom;
+  keepWorldAt(point, sx, sy);
   requestRender();
+}
+function rotateView(delta) {
+  const sx = View.width / 2,
+    sy = View.height / 2,
+    point = screenToWorld(sx, sy);
+  View.rotation = ((((View.rotation + delta + 180) % 360) + 360) % 360) - 180;
+  keepWorldAt(point, sx, sy);
+  syncViewRotation();
+  requestRender();
+  hud("View rotation\n" + View.rotation + "°");
+}
+function resetViewRotation() {
+  rotateView(-View.rotation);
 }
 function fitBoard() {
   const points = [];
@@ -114,14 +163,15 @@ function fitBoard() {
   for (const c of State.components) {
     if (!layerVisible(c.layerId)) continue;
     const r = compRadius(c);
-    points.push({ x: c.x - r, y: c.y - r }, { x: c.x + r, y: c.y + r });
+    for (const x of [c.x - r, c.x + r]) for (const y of [c.y - r, c.y + r]) points.push({ x, y });
   }
   for (const t of State.traces) if (layerVisible(t.layerId)) points.push(...t.points);
   for (const v of State.vias)
     if (viaOnLayer(v, View.activeLayerId))
-      points.push({ x: v.x - v.r, y: v.y - v.r }, { x: v.x + v.r, y: v.y + v.r });
+      for (const x of [v.x - v.r, v.x + v.r])
+        for (const y of [v.y - v.r, v.y + v.r]) points.push({ x, y });
   if (points.length) {
-    const b = bounds(points);
+    const b = bounds(points.map((p) => cameraRotate(p.x, p.y)));
     View.zoom = Math.max(
       0.000001,
       Math.min(
@@ -210,6 +260,7 @@ function renderCanvas() {
   ctx.clearRect(0, 0, View.width, View.height);
   ctx.save();
   ctx.translate(View.panX, View.panY);
+  ctx.rotate((View.rotation * Math.PI) / 180);
   ctx.scale(View.zoom, View.zoom);
   const contributions = imageContributions(visibleScans(), View.blend),
     requested = planTileRequests(contributions),
@@ -217,6 +268,7 @@ function renderCanvas() {
       View.zoom,
       View.panX,
       View.panY,
+      View.rotation,
       ...contributions.map(({ scan }) => [scan.id, scan.transform, scan.flipX, scan.flipY]),
     ]);
   Tiles.view(requested, viewToken);
@@ -235,12 +287,11 @@ function renderCanvas() {
       : "";
   if (View.grid) {
     const step = State.calibration?.boardUnitsPerMm || 100,
-      tl = screenToWorld(0, 0),
-      br = screenToWorld(View.width, View.height);
+      b = bounds(viewportWorldCorners());
     if (step * View.zoom >= 8) {
       ctx.fillStyle = "#b0c5d440";
-      for (let x = Math.ceil(tl.x / step) * step; x < br.x; x += step)
-        for (let y = Math.ceil(tl.y / step) * step; y < br.y; y += step)
+      for (let x = Math.ceil(b.minX / step) * step; x <= b.maxX; x += step)
+        for (let y = Math.ceil(b.minY / step) * step; y <= b.maxY; y += step)
           ctx.fillRect(x, y, 1 / View.zoom, 1 / View.zoom);
     }
   }
@@ -289,13 +340,15 @@ function renderCanvas() {
     }
   ctx.restore();
   if (Editor.drag?.type === "marquee" && Editor.drag.moved) {
-    const box = bounds([Editor.drag.start, Editor.drag.end]);
     ctx.fillStyle = "#baf5df10";
     ctx.strokeStyle = "#baf5df";
     ctx.lineWidth = 1 / View.zoom;
-    ctx.fillRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
-    ctx.strokeRect(box.minX, box.minY, box.maxX - box.minX, box.maxY - box.minY);
+    pathTrace(ctx, marqueeWorldCorners(Editor.drag.start, Editor.drag.end));
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
   }
+
   const corners = selectionResizeCorners();
   if (corners.length) {
     ctx.strokeStyle = "#baf5df";
@@ -388,10 +441,18 @@ function resizeHandleAt(p) {
   }
   // Keep the centre available for moving pads whose handles overlap at low zoom.
   if (!nearest || Math.hypot(p.x - center.x, p.y - center.y) < distance) return null;
+  const screenCorner = worldToScreen(nearest.x, nearest.y),
+    screenCenter = worldToScreen(center.x, center.y),
+    angle =
+      (Math.atan2(screenCorner.y - screenCenter.y, screenCorner.x - screenCenter.x) * 180) /
+      Math.PI,
+    cursor = ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize"][
+      ((Math.round(angle / 45) % 4) + 4) % 4
+    ];
   return {
     corner: nearest,
     cornerIndex,
-    cursor: (nearest.x - center.x) * (nearest.y - center.y) >= 0 ? "nwse-resize" : "nesw-resize",
+    cursor,
   };
 }
 function hitTest(p) {
