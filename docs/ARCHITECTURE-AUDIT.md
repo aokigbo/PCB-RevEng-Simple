@@ -49,9 +49,10 @@ aborted promises are not reused by a new viewport.
 
 L0 reads native RGB without resampling. Reduced levels map directly into the
 closest consistent TIFF page/SubIFD overview, or the original TIFF. GeoTIFF.js 3
-allocates its input raster before reducing it, so reduced reads are split into
-source windows of at most roughly 1024 square pixels and sampled bilinearly into
-a 512-pixel output tile. No child cache levels are generated as dependencies.
+allocates its input raster before reducing it, so reduced reads fetch only the two source rows needed for each output row (at most
+65,536 source pixels wide) and sample them bilinearly into a 512-pixel output tile.
+Decode permits use a cancellable FIFO queue, waking only jobs with a reserved slot.
+This avoids thousands of queued one-row strips and repeated all-waiter wakeups. No child cache levels are generated as dependencies.
 
 Memory miss checks disk, then source. Missing/damaged cache PNGs regenerate.
 Bitmap delivery occurs before PNG encoding/write; persistence has a bounded eight

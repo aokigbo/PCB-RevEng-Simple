@@ -20,6 +20,39 @@ const stats = (values) => self.postMessage({ stats: values });
 function cancelled(signal) {
   if (signal?.aborted) throw new DOMException("Image request cancelled.", "AbortError");
 }
+// Reserve each permit before waking one waiter. Waking the entire queue for
+// every strip caused quadratic promise churn on scanners with one-row strips.
+async function acquireBlock(signal) {
+  cancelled(signal);
+  if (blockActive < blockLimit) {
+    blockActive++;
+    return;
+  }
+  await new Promise((resolve, reject) => {
+    const waiter = { resolve, signal, abort: null };
+    waiter.abort = () => {
+      const index = blockWaiters.indexOf(waiter);
+      if (index >= 0) blockWaiters.splice(index, 1);
+      reject(new DOMException("Image request cancelled.", "AbortError"));
+    };
+    signal?.addEventListener("abort", waiter.abort, { once: true });
+    blockWaiters.push(waiter);
+  });
+  if (signal?.aborted) {
+    releaseBlock();
+    cancelled(signal);
+  }
+}
+function releaseBlock() {
+  blockActive--;
+  while (blockActive < blockLimit && blockWaiters.length) {
+    const waiter = blockWaiters.shift();
+    waiter.signal?.removeEventListener("abort", waiter.abort);
+    if (waiter.signal?.aborted) continue;
+    blockActive++;
+    waiter.resolve();
+  }
+}
 async function writeFile(dir, name, data) {
   const w = await (await dir.getFileHandle(name, { create: true })).createWritable();
   try {
@@ -121,13 +154,12 @@ async function imageFor(opened, address) {
         Blocks.set(key, hit);
         return hit.result;
       }
-      while (blockActive >= blockLimit) {
-        await new Promise((resolve) => blockWaiters.push(resolve));
-        cancelled(signal);
+      await acquireBlock(signal);
+      // A nearby request may have completed this block while this one waited.
+      if (Blocks.has(key)) {
+        releaseBlock();
+        return Blocks.get(key).result;
       }
-      // Another adjacent request may have decoded the block while this one waited.
-      if (Blocks.has(key)) return Blocks.get(key).result;
-      blockActive++;
       const result = (async () => {
         const fd = image.getFileDirectory(),
           nx = Math.ceil(image.getWidth() / image.getTileWidth()),
@@ -165,8 +197,7 @@ async function imageFor(opened, address) {
         }
         throw e;
       } finally {
-        blockActive--;
-        blockWaiters.splice(0).forEach((resolve) => resolve());
+        releaseBlock();
       }
     };
     return image;
@@ -213,42 +244,44 @@ async function pixels(opened, scan, spec, signal) {
       rgba[j + 3] = 255;
     }
   } else {
-    // GeoTIFF.js allocates the source window before resampling. Bound every window
-    // rather than requesting a gigabyte-sized full-board raster for one overview.
+    // Bilinear output needs two source rows, not all rows between display
+    // samples. Reading a 1024-row window on one-row-stripped scans queued
+    // thousands of decodes, copied mostly unused pixels and thrashed the cache.
     const dx = (right - left) / geom.width,
       dy = (bottom - top) / geom.height,
-      cw = Math.max(1, Math.min(geom.width, Math.floor(1022 / Math.max(dx, 1)))),
-      ch = Math.max(1, Math.min(geom.height, Math.floor(1022 / Math.max(dy, 1))));
-    for (let oy = 0; oy < geom.height; oy += ch)
-      for (let ox = 0; ox < geom.width; ox += cw) {
+      maxSpan = 65536,
+      chunkWidth = Math.max(1, Math.min(geom.width, Math.floor((maxSpan - 2) / Math.max(dx, 1))));
+    for (let oy = 0; oy < geom.height; oy++) {
+      cancelled(signal);
+      const sourceY = top + oy * dy,
+        y0 = Math.floor(sourceY),
+        y1 = Math.min(image.getHeight(), y0 + 2),
+        ay = sourceY - y0;
+      for (let ox = 0; ox < geom.width; ox += chunkWidth) {
         cancelled(signal);
-        const w = Math.min(cw, geom.width - ox),
-          h = Math.min(ch, geom.height - oy),
+        const w = Math.min(chunkWidth, geom.width - ox),
           x0 = Math.floor(left + ox * dx),
-          y0 = Math.floor(top + oy * dy),
           x1 = Math.min(image.getWidth(), Math.floor(left + (ox + w - 1) * dx) + 2),
-          y1 = Math.min(image.getHeight(), Math.floor(top + (oy + h - 1) * dy) + 2),
           rgb = await image.readRGB({ window: [x0, y0, x1, y1], pool, interleave: true, signal }),
           rw = x1 - x0;
-        for (let y = 0; y < h; y++)
-          for (let x = 0; x < w; x++) {
-            const fx = left + (ox + x) * dx - x0,
-              fy = top + (oy + y) * dy - y0,
-              ix = Math.floor(fx),
-              iy = Math.floor(fy),
-              ax = fx - ix,
-              ay = fy - iy,
-              j = ((oy + y) * geom.width + ox + x) * 4;
-            for (let c = 0; c < 3; c++) {
-              const a = rgb[(iy * rw + ix) * 3 + c],
-                b = rgb[(iy * rw + Math.min(ix + 1, rw - 1)) * 3 + c],
-                d = rgb[(Math.min(iy + 1, y1 - y0 - 1) * rw + ix) * 3 + c],
-                e = rgb[(Math.min(iy + 1, y1 - y0 - 1) * rw + Math.min(ix + 1, rw - 1)) * 3 + c];
-              rgba[j + c] = (a * (1 - ax) + b * ax) * (1 - ay) + (d * (1 - ax) + e * ax) * ay;
-            }
-            rgba[j + 3] = 255;
+        for (let x = 0; x < w; x++) {
+          const fx = left + (ox + x) * dx - x0,
+            ix = Math.floor(fx),
+            ax = fx - ix,
+            j = (oy * geom.width + ox + x) * 4,
+            nextX = Math.min(ix + 1, rw - 1),
+            nextRow = y1 - y0 > 1 ? rw : 0;
+          for (let c = 0; c < 3; c++) {
+            const a = rgb[ix * 3 + c],
+              b = rgb[nextX * 3 + c],
+              d = rgb[(nextRow + ix) * 3 + c],
+              e = rgb[(nextRow + nextX) * 3 + c];
+            rgba[j + c] = (a * (1 - ax) + b * ax) * (1 - ay) + (d * (1 - ax) + e * ax) * ay;
           }
+          rgba[j + 3] = 255;
+        }
       }
+    }
     stats({ resampleMs: performance.now() - start });
   }
   cancelled(signal);

@@ -75,8 +75,8 @@ copy/paste, undo/redo and Select/Component/Trace/Via/Measure shortcuts remain.
 
 TIFF import copies 16 MiB chunks without decoding the full image. A persistent
 image worker opens sources lazily and generates requested logical tiles directly,
-using matching internal TIFF overviews when available. Large reduced views are
-split into bounded source windows because GeoTIFF.js allocates before resampling.
+using matching internal TIFF overviews when available. Reduced views read only the source row pairs needed for bilinear display, with
+bounded row width, because GeoTIFF.js allocates before resampling.
 The memory LRU targets 512 MiB (1 GiB emergency limit), retaining coarse fallbacks.
 Up to three tile reads share one decoder pool of at most three workers. Large
 source blocks reduce concurrency; decoded source-block reuse is capped near 96 MiB.

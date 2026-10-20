@@ -1,7 +1,7 @@
 {
   "name": "pcb-reveng-simple",
   "private": true,
-  "version": "3.0.0",
+  "version": "3.0.1",
   "description": "Multilayer PCB connectivity reconstruction with disk-backed tiled scans",
   "scripts": {
     "test": "node --test tests/*.test.cjs",

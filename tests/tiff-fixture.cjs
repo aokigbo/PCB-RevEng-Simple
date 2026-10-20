@@ -15,10 +15,10 @@ function lzwLiteral(bytes) {
 module.exports = function makeTiff(
   width,
   height,
-  { tiled = false, compression = 1, big = false, metadataPadding = 0 } = {},
+  { tiled = false, compression = 1, big = false, metadataPadding = 0, rowsPerStrip = 32 } = {},
 ) {
   const bw = tiled ? 256 : width,
-    bh = tiled ? 256 : 32,
+    bh = tiled ? 256 : rowsPerStrip,
     nx = Math.ceil(width / bw),
     ny = Math.ceil(height / bh),
     chunks = [];

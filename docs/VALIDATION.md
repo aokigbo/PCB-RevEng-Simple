@@ -35,3 +35,29 @@ RAM use. PNG/JPEG remain capped at 32 megapixels, PDF files at 64 MiB, legacy JS
 at 256 MiB and project JSON on Open at 32 MiB. External source replacement detection
 uses size/timestamp checks, not a whole-file checksum. Source/file modification can
 race a filesystem read; ordinary browser writable-file atomic-close semantics apply.
+
+## One-row scanner TIFF regression
+
+The reported file was reproduced read-only in an isolated Chrome project using a
+project-owned copy: 1,718,664,684 bytes, RGB8, 20,400 × 28,080, uncompressed, 28,080
+one-row strips. No private image data or source paths are included in the repository.
+
+Before the fix, no tile appeared after 22 seconds of viewing. Proportional browser
+memory rose from approximately 336 MiB to 1,419 MiB, while as many as 2,775 strip
+reads waited. The controlled run was stopped at its memory guard before a crash.
+The old 1024-row raster windows and wake-all decode gate were traced directly.
+
+After the fix, the same file produced its first visible tile about 4 seconds after
+import. All five requested tiles completed, the decode queue peaked at 3 waiters,
+and measured proportional memory settled near 482 MiB. These are observations on
+this machine, not universal timing promises. The original file's size, modification
+time and file identity were unchanged before and after both runs.
+
+The copied scan also passed reopening, native-resolution source-pixel comparisons,
+12 rapid pans with cancellation, and returning to the cached fit view. Native/pan
+runs remained below approximately 505 MiB proportional memory in the sampled data.
+The automated regression checks the same logical image dimensions without a large
+fixture, asserts two-row demand reads, FIFO permits, immediate queued cancellation,
+and imports a real manageable one-row-strip TIFF in the full browser workflow.
+This validates the reported scan; a full 10–15 GB multi-scan session is still a
+separate hardware qualification task.
