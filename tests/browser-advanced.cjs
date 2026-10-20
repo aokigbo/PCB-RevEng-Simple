@@ -172,6 +172,8 @@ module.exports = async ({ page, png, tiff, clickWorld, freshFolder }) => {
   await page
     .locator('.layer-row[data-layer-id="2"]')
     .dragTo(page.locator('.layer-row[data-layer-id="1"]'));
+  // Native drop/confirmation can finish after the input command is acknowledged.
+  await page.waitForFunction(() => State.physicalLayers[0].id === 2);
   assert.equal(await page.evaluate(() => State.physicalLayers[0].id), 2);
   assert.ok(dialogs.some((x) => x.includes("physical span")));
   assert.equal(await page.evaluate(() => State.components[0].layerId), 1);
