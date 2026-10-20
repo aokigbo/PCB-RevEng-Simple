@@ -169,49 +169,13 @@ module.exports = async ({ page, png, tiff, clickWorld, freshFolder }) => {
       }),
     ),
   );
-  const dragPositions = await page.evaluate(() => {
-    window.layerDragEvents = [];
-    for (const type of ["pointerdown", "pointerup", "dragstart", "drop", "dragend"])
-      document.addEventListener(
-        type,
-        (e) => {
-          layerDragEvents.push({
-            type,
-            layer: e.target.closest(".layer-row")?.dataset.layerId,
-            tag: e.target.tagName,
-            cls: e.target.className,
-            x: e.clientX,
-            y: e.clientY,
-            draggable: e.target.closest(".layer-row")?.draggable,
-            value: e.dataTransfer?.getData("text/plain"),
-          });
-        },
-        true,
-      );
-    return [2, 1].map((id) => {
-      const row = document.querySelector(`.layer-row[data-layer-id="${id}"]`),
-        r = row.getBoundingClientRect(),
-        name = row.querySelector(".layer-name").getBoundingClientRect(),
-        menu = row.querySelector(".layer-menu").getBoundingClientRect();
-      // Grab the row's gap, not either nested button (whose drag behavior differs by platform).
-      const pos = { x: (name.right + menu.left) / 2 - r.left, y: r.height / 2 };
-      layerDragEvents.push({
-        row: id,
-        rect: r.toJSON(),
-        pos,
-        draggable: row.draggable,
-        hit: document.elementFromPoint(r.left + pos.x, r.top + pos.y)?.outerHTML,
-      });
-      return pos;
-    });
+  // Reveal both rows before mouse-down: scrolling the target during a native drag cancels it.
+  await page.locator("#sidebar, #layer-stack").evaluateAll((panels) => {
+    for (const panel of panels) panel.scrollTop = 0;
   });
   await page
     .locator('.layer-row[data-layer-id="2"]')
-    .dragTo(page.locator('.layer-row[data-layer-id="1"]'), {
-      sourcePosition: dragPositions[0],
-      targetPosition: dragPositions[1],
-      steps: 8,
-    });
+    .dragTo(page.locator('.layer-row[data-layer-id="1"]'), { steps: 8 });
   // Native drop/confirmation can finish after the input command is acknowledged.
   await page.waitForFunction(() => State.physicalLayers[0].id === 2);
   assert.equal(await page.evaluate(() => State.physicalLayers[0].id), 2);
