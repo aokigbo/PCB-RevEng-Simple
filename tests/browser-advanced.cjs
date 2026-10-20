@@ -169,9 +169,32 @@ module.exports = async ({ page, png, tiff, clickWorld, freshFolder }) => {
       }),
     ),
   );
+  const dragPositions = await page.evaluate(() => {
+    window.layerDragEvents = [];
+    for (const type of ["dragstart", "drop", "dragend"])
+      document.getElementById("layer-stack").addEventListener(type, (e) => {
+        layerDragEvents.push({
+          type,
+          layer: e.target.closest(".layer-row")?.dataset.layerId,
+          value: e.dataTransfer.getData("text/plain"),
+        });
+      });
+    return [2, 1].map((id) => {
+      const row = document.querySelector(`.layer-row[data-layer-id="${id}"]`),
+        r = row.getBoundingClientRect(),
+        name = row.querySelector(".layer-name").getBoundingClientRect(),
+        menu = row.querySelector(".layer-menu").getBoundingClientRect();
+      // Grab the row's gap, not either nested button (whose drag behavior differs by platform).
+      return { x: (name.right + menu.left) / 2 - r.left, y: r.height / 2 };
+    });
+  });
   await page
     .locator('.layer-row[data-layer-id="2"]')
-    .dragTo(page.locator('.layer-row[data-layer-id="1"]'));
+    .dragTo(page.locator('.layer-row[data-layer-id="1"]'), {
+      sourcePosition: dragPositions[0],
+      targetPosition: dragPositions[1],
+      steps: 8,
+    });
   // Native drop/confirmation can finish after the input command is acknowledged.
   await page.waitForFunction(() => State.physicalLayers[0].id === 2);
   assert.equal(await page.evaluate(() => State.physicalLayers[0].id), 2);
