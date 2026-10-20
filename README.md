@@ -24,8 +24,9 @@ access when creating or opening a project.
 
 1. Choose **New** and select a new empty project folder, or **Open** an existing one.
 2. Add physical layers, describe their depth, and drag their rows to reorder them.
-3. Add TIFF scans to each layer. Preparation writes a lossless PNG tile pyramid.
-   The original TIFF can then be moved or deleted.
+3. Add TIFF scans to each layer. The app streams a project-owned copy and reads
+   metadata. Viewing starts without a complete pyramid; tiles generate on demand.
+   The external original can then be moved or deleted.
 4. Click a layer and one of its scans. Choose an optional **Comparison** from any
    layer and adjust **Blend**. **Drawing opacity** fades the reconstruction.
 5. Select a scan's **⋯** properties to flip or align it against any other scan
@@ -42,14 +43,18 @@ Projects are portable folders:
 My-Board/
   project.json
   images/scan-21/manifest.json
-  images/scan-21/L0/0_0.png
-  images/scan-21/L1/0_0.png
+  images/scan-21/source.tif
+  images/scan-21/cache-v1/L0/0_0.png
+  images/scan-21/cache-v1/L3/0_0.png
   ...
   datasheets/<sha256>.pdf
 ```
 
 Keep the whole folder when moving or backing up a project. **Import .pcbrev**
 converts an existing v1 project into a separate new folder and preserves the original.
+Opening v2 projects preserves their existing pyramids; Save upgrades the metadata
+to v3. New TIFF scans use source files. **Clear Derived Image Cache** in scan
+properties removes only disposable acceleration data, never the source.
 Save As is superseded by normal folder copying outside the app.
 
 ## Inspection shortcuts
@@ -68,10 +73,17 @@ copy/paste, undo/redo and Select/Component/Trace/Via/Measure shortcuts remain.
 
 ## Memory and data integrity
 
-Scans are read in small windows during TIFF import. Viewing loads only appropriate
-visible tiles for at most two scans. The weighted LRU targets 512 MiB of decoded
-pixels, has a 1 GiB hard ceiling, closes evicted bitmaps, and permits four concurrent
-tile reads. Preprocessing runs in a worker with a two-worker decoder pool.
+TIFF import copies 16 MiB chunks without decoding the full image. A persistent
+image worker opens sources lazily and generates requested logical tiles directly,
+using matching internal TIFF overviews when available. Large reduced views are
+split into bounded source windows because GeoTIFF.js allocates before resampling.
+The memory LRU targets 512 MiB (1 GiB emergency limit), retaining coarse fallbacks.
+Up to three tile reads share one decoder pool of at most three workers. Large
+source blocks reduce concurrency; decoded source-block reuse is capped near 96 MiB.
+Visible work is center-first and interleaved across comparison scans. Stale reads
+are cancelled, then fallbacks, one-ring prefetch and only the highest two overview
+levels receive background work. PNG persistence follows bitmap delivery and may
+fail without preventing inspection. There is no background full-resolution sweep.
 
 L0 preserves RGB source pixels losslessly. TIFFs with decoded or compressed blocks
 above 128 MiB are refused with a smaller-strip/tile instruction, rather than risking

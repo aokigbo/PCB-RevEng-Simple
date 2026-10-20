@@ -45,7 +45,7 @@ const tiff = require("./tiff-fixture.cjs");
             await (await (await testDirectory.getFileHandle("project.json")).getFile()).text(),
           ).version,
       ),
-      2,
+      3,
     );
     await page.getByRole("button", { name: "+ Add layer", exact: true }).click();
     await page.waitForFunction(() => State.physicalLayers.length === 3);
@@ -58,37 +58,51 @@ const tiff = require("./tiff-fixture.cjs");
         .click();
       await (await chooser).setFiles(file);
     }
-    const source = tiff(1025, 769);
+    await page.evaluate(() => {
+      window.savedTileView = Tiles.view;
+      Tiles.view = () => {};
+    });
+    const source = tiff(1025, 769, { metadataPadding: 8192 });
     await upload({ name: "copper.tif", mimeType: "image/tiff", buffer: source });
     await page.waitForFunction(
       () => State.scans.length === 1 && !ProjectFile.busy,
       {},
       { timeout: 60000 },
     );
-    const fidelity = await page.evaluate(async () => {
+    const imported = await page.evaluate(async () => {
       const scan = State.scans[0],
         dir = await scanDirectory(scan.id),
-        manifest = JSON.parse(
+        entries = [];
+      for await (const [name] of dir.entries()) entries.push(name);
+      return {
+        entries: entries.sort(),
+        manifest: JSON.parse(
           await (await (await dir.getFileHandle("manifest.json")).getFile()).text(),
         ),
-        l0 = await dir.getDirectoryHandle("L0"),
-        tile = await createImageBitmap(await (await l0.getFileHandle("2_1.png")).getFile()),
-        c = new OffscreenCanvas(tile.width, tile.height),
+        sourceSize: (await (await dir.getFileHandle("source.tif")).getFile()).size,
+      };
+    });
+    assert.deepEqual(imported.entries, ["manifest.json", "source.tif"]);
+    assert.equal(imported.sourceSize, source.length);
+    assert.equal(imported.manifest.schema, "pcb-reveng-scan-v1");
+    assert.equal(imported.manifest.maxLogicalLevel, 2);
+    const fidelity = await page.evaluate(async () => {
+      const scan = State.scans[0],
+        img = await ImageEngine.tile(tileSpec(scan, 0, 2, 1)),
+        c = new OffscreenCanvas(img.width, img.height),
         ctx = c.getContext("2d");
-      ctx.drawImage(tile, 0, 0);
-      const rgba = Array.from(ctx.getImageData(0, 1, 1, 1).data);
-      return { manifest, edge: [tile.width, tile.height], rgba };
+      ctx.drawImage(img, 0, 0);
+      const rgba = Array.from(ctx.getImageData(0, 1, 1, 1).data),
+        edge = [img.width, img.height];
+      img.close();
+      return { rgba, edge };
     });
     assert.deepEqual(fidelity.edge, [1, 257]);
     assert.deepEqual(fidelity.rgba, [0, 1, 1, 255]);
-    assert.deepEqual(
-      fidelity.manifest.levels.map((l) => [l.width, l.height]),
-      [
-        [1025, 769],
-        [513, 385],
-        [257, 193],
-      ],
-    );
+    await page.evaluate(() => {
+      Tiles.view = window.savedTileView;
+      requestRender();
+    });
     await page.waitForFunction(() => Tiles.cache.bytes > 0);
     assert.ok(await page.evaluate(() => Tiles.cache.bytes < 512 * 1024 * 1024));
     for (const [name, options] of [
@@ -111,13 +125,11 @@ const tiff = require("./tiff-fixture.cjs");
       );
       const mismatches = await page.evaluate(async () => {
         const scan = State.scans[1],
-          dir = await (await scanDirectory(scan.id)).getDirectoryHandle("L0");
+          dir = await scanDirectory(scan.id);
         let bad = 0;
         for (let ty = 0; ty < Math.ceil(scan.height / 512); ty++)
           for (let tx = 0; tx < Math.ceil(scan.width / 512); tx++) {
-            const img = await createImageBitmap(
-                await (await dir.getFileHandle(tx + "_" + ty + ".png")).getFile(),
-              ),
+            const img = await ImageEngine.tile(tileSpec(scan, 0, tx, ty)),
               c = new OffscreenCanvas(img.width, img.height),
               ctx = c.getContext("2d");
             ctx.drawImage(img, 0, 0);
@@ -258,11 +270,20 @@ const tiff = require("./tiff-fixture.cjs");
     assert.equal(graph.scans, undefined);
     assert.equal(graph.components[0].x, undefined);
     assert.match(await page.evaluate(() => exportOptions.suggestedName), /-AI\.zip$/);
+    await page.waitForFunction(
+      () =>
+        [...Tiles.wanted.values()]
+          .filter((s) => s.priority === 0)
+          .every((s) => Tiles.cache.entries.has(s.key)),
+      {},
+      { timeout: 15000 },
+    );
     await page.screenshot({ path: path.join(out, "multilayer-workspace.png") });
     await require("./browser-advanced.cjs")({ page, png, tiff, clickWorld, freshFolder });
+    await require("./sparse-browser.cjs")({ page, tiff, freshFolder });
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: directory New/Open/Save, real TIFF worker/pyramid/L0 pixels, multiple scans, view shortcuts, components/copy/datasheets and streaming AI ZIP.",
+      "PASS: directory New/Open/Save, sparse TIFF source copy/lazy L0 pixels, multiple scans, view shortcuts, components/copy/datasheets and streaming AI ZIP.",
     );
   } catch (e) {
     console.error("Browser errors:", errors);

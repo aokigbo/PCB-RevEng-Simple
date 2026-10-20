@@ -276,7 +276,7 @@ module.exports = async ({ page, png, tiff, clickWorld, freshFolder }) => {
           await (await (await testDirectory.getFileHandle("project.json")).getFile()).text(),
         ).version,
     ),
-    2,
+    3,
   );
   await page.evaluate(() => {
     activateLayer(State.components[0].layerId);

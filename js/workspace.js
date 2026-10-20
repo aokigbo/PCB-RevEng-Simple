@@ -581,6 +581,8 @@ function scanInspector(panel, s) {
     field(panel, "Landmark pairs", "3", (v) => (count = Number(v)), { choices: ["3", "4", "5"] });
     button(panel, "Align to reference", () => beginAlignment(s, ref, count));
   }
+  if (s.assetMode === "tiff-source")
+    button(panel, "Clear Derived Image Cache", () => clearDerivedImageCache(s));
   button(
     panel,
     "Delete scan",

@@ -164,7 +164,7 @@ function makeComponent(
   };
 }
 function documentPayload() {
-  return { app: "pcb-reveng-simple", version: 2, ...State };
+  return { app: "pcb-reveng-simple", version: 3, ...State };
 }
 function serializeProject() {
   return JSON.stringify(documentPayload(), null, 2) + "\n";
@@ -193,8 +193,15 @@ function validateDocument(input) {
     num(o.x, "X");
     num(o.y, "Y");
   };
-  if (d.app !== "pcb-reveng-simple" || d.version !== 2)
+  if (d.app !== "pcb-reveng-simple" || ![2, 3].includes(d.version))
     fail("unsupported format; use Import Existing .pcbrev for v1");
+  if (d.version === 2) {
+    for (const scan of d.scans || []) {
+      scan.assetMode = "legacy-pyramid";
+      scan.maxLogicalLevel = scan.levels - 1;
+      delete scan.levels;
+    }
+  }
   str(d.name, "name");
   if (d.calibration !== null) {
     if (!d.calibration) fail("calibration");
@@ -222,7 +229,8 @@ function validateDocument(input) {
       !Number.isInteger(s.width) ||
       !Number.isInteger(s.height) ||
       s.tileSize !== 512 ||
-      s.levels !== pyramidLevels(s.width, s.height).length
+      s.maxLogicalLevel !== pyramidLevels(s.width, s.height).length - 1 ||
+      !["tiff-source", "legacy-pyramid"].includes(s.assetMode)
     )
       fail("scan pyramid");
     for (const f of ["flipX", "flipY", "aligned"]) if (typeof s[f] !== "boolean") fail(f);
@@ -319,7 +327,8 @@ function validateDocument(input) {
       "width",
       "height",
       "tileSize",
-      "levels",
+      "maxLogicalLevel",
+      "assetMode",
       "flipX",
       "flipY",
       "aligned",
@@ -354,7 +363,7 @@ function validateDocument(input) {
   for (const v of d.vias)
     checkKeys(v, ["id", "x", "y", "r", "hole", "fromLayerId", "toLayerId", "netName"]);
   for (const a of d.attachments) checkKeys(a, ["id", "name", "mime", "size", "sha256"]);
-  // Only the v2 schema is adopted; binary assets and transient views cannot sneak into state.
+  // Only the v3 schema is adopted; binary assets and transient views cannot sneak into state.
   return {
     name: d.name,
     nextId: d.nextId,

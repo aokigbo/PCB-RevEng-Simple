@@ -211,17 +211,28 @@ function renderCanvas() {
   ctx.save();
   ctx.translate(View.panX, View.panY);
   ctx.scale(View.zoom, View.zoom);
-  const scans = visibleScans(),
-    specs = scans.map((scan) => visibleTileSpecs(scan));
-  Tiles.view(specs.flat());
-  scans.forEach((scan, i) =>
-    renderScanTiles(
-      ctx,
-      scan,
-      scans.length === 1 ? 1 : i === 0 ? 1 - View.blend : View.blend,
-      specs[i],
-    ),
-  );
+  const contributions = imageContributions(visibleScans(), View.blend),
+    requested = planTileRequests(contributions),
+    viewToken = JSON.stringify([
+      View.zoom,
+      View.panX,
+      View.panY,
+      ...contributions.map(({ scan }) => [scan.id, scan.transform, scan.flipX, scan.flipY]),
+    ]);
+  Tiles.view(requested, viewToken);
+  for (const { scan, alpha } of contributions)
+    renderScanTiles(ctx, scan, alpha, visibleTileSpecs(scan));
+  const loading = document.getElementById("image-loading");
+  if (loading)
+    loading.textContent = [...Tiles.wanted.values()].some(
+      (s) =>
+        s.priority === 0 &&
+        !Tiles.unavailable.has(s.scanId) &&
+        !Tiles.cache.entries.has(s.key) &&
+        !Tiles.failed.has(s.key),
+    )
+      ? "Loading detail…"
+      : "";
   if (View.grid) {
     const step = State.calibration?.boardUnitsPerMm || 100,
       tl = screenToWorld(0, 0),

@@ -123,12 +123,13 @@
         </div>
       </details>
       <button id="fit" title="Fit board · F">Fit</button><span id="zoom">100%</span
-      ><span id="coordinates">0.00, 0.00 mm</span>
+      ><span id="image-loading" role="status"></span><span id="coordinates">0.00, 0.00 mm</span>
     </footer>
     <div id="toast" role="status" hidden></div>
     <input type="file" id="scan-input" accept=".tif,.tiff,image/tiff,image/png,image/jpeg" hidden />
     <input type="file" id="project-input" accept=".pcbrev,.json" hidden />
     <script src="js/catalog.js"></script>
+    <script src="js/image-source.js"></script>
     <script src="js/image-pyramid.js"></script>
     <script src="js/document.js"></script>
     <script src="js/legacy-import.js"></script>
@@ -139,6 +140,7 @@
     <script src="js/files.js"></script>
     <script src="vendor/fflate-0.8.3.js"></script>
     <script src="js/export.js"></script>
+    <script src="js/tile-engine.js"></script>
     <script src="js/tile-cache.js"></script>
     <script src="js/canvas.js"></script>
     <script src="js/editor.js"></script>

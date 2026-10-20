@@ -109,3 +109,53 @@ module.exports = function makeTiff(
   });
   return buffer;
 };
+// Compose standard TIFF pages, rebasing only TIFF offsets (not pixel values).
+module.exports.withPages = function (pages, { subIFDs = false } = {}) {
+  const buffers = pages.map(([w, h]) =>
+    module.exports(w, h, { compression: 8, metadataPadding: 8192 }),
+  );
+  const starts = [];
+  let size = 0;
+  for (const b of buffers) {
+    starts.push(size);
+    size += b.length;
+  }
+  for (let page = 0; page < buffers.length; page++) {
+    const b = buffers[page],
+      delta = starts[page],
+      count = b.readUInt16LE(8);
+    for (let i = 0; i < count; i++) {
+      const p = 10 + i * 12,
+        tag = b.readUInt16LE(p),
+        type = b.readUInt16LE(p + 2),
+        amount = b.readUInt32LE(p + 4),
+        inline = (type === 3 ? 2 : 4) * amount <= 4;
+      if (tag === 273 || tag === 324) {
+        if (inline) b.writeUInt32LE(b.readUInt32LE(p + 8) + delta, p + 8);
+        else {
+          const table = b.readUInt32LE(p + 8);
+          for (let n = 0; n < amount; n++)
+            b.writeUInt32LE(b.readUInt32LE(table + n * 4) + delta, table + n * 4);
+        }
+      }
+      if (!inline) b.writeUInt32LE(b.readUInt32LE(p + 8) + delta, p + 8);
+    }
+    b.writeUInt32LE(page + 1 < buffers.length ? starts[page + 1] + 8 : 0, 10 + count * 12);
+  }
+  if (subIFDs) {
+    // Add one inline SubIFD to the first page in padding, copying its IFD there.
+    const first = buffers[0],
+      n = first.readUInt16LE(8),
+      newIfd = 512;
+    first.copy(first, newIfd, 8, 10 + n * 12);
+    first.writeUInt16LE(n + 1, newIfd);
+    const p = newIfd + 2 + n * 12;
+    first.writeUInt16LE(330, p);
+    first.writeUInt16LE(4, p + 2);
+    first.writeUInt32LE(1, p + 4);
+    first.writeUInt32LE(starts[1] + 8, p + 8);
+    first.writeUInt32LE(0, p + 12);
+    first.writeUInt32LE(newIfd, 4);
+  }
+  return Buffer.concat(buffers);
+};

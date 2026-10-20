@@ -69,6 +69,8 @@ function harness(root = new Directory()) {
   const messages = [],
     c = vm.createContext({
       structuredClone,
+      AbortController,
+      DOMException,
       Blob,
       atob,
       crypto: webcrypto,
@@ -107,7 +109,7 @@ test("New creates portable folder and Save rewrites only project metadata", asyn
   assert.equal(h.run("isDirty()"), false);
   const d = JSON.parse(await (await (await h.root.getFileHandle("project.json")).getFile()).text());
   assert.equal(d.name, "Revised");
-  assert.equal(d.version, 2);
+  assert.equal(d.version, 3);
 });
 test("Open rejects invalid metadata transactionally and retains original directory/checkpoint", async () => {
   const h = harness();
@@ -125,7 +127,7 @@ test("missing manifest keeps engineering metadata inspectable and does not enume
   const h = harness();
   await h.run("newProject()");
   h.run(
-    `State.scans.push({id:nextId(),layerId:1,name:'Missing scan',sourceName:'source.tif',width:20000,height:30000,tileSize:512,levels:pyramidLevels(20000,30000).length,flipX:false,flipY:false,aligned:false,transform:{tx:0,ty:0,scale:1,rotation:0}});`,
+    `State.scans.push({id:nextId(),layerId:1,name:'Missing scan',sourceName:'source.tif',width:20000,height:30000,tileSize:512,maxLogicalLevel:pyramidLevels(20000,30000).length-1,assetMode:"legacy-pyramid",flipX:false,flipY:false,aligned:false,transform:{tx:0,ty:0,scale:1,rotation:0}});`,
   );
   await h.run("saveProject();");
   await h.run("openProject()");
@@ -178,4 +180,134 @@ test("asset cleanup retains undo/redo references and touches only app-owned name
   assert.equal(images.children.has("scan-20"), true);
   assert.equal(images.children.has("scan-21"), false);
   assert.equal(images.children.has("my-notes.txt"), true);
+});
+test("TIFF copying uses bounded slices, never whole-file ArrayBuffer", async () => {
+  const h = harness();
+  await h.run("newProject()");
+  h.c.testFile = {
+    size: 33 * 1024 * 1024,
+    arrayBuffer() {
+      throw Error("whole-file read");
+    },
+    slice(start, end) {
+      const size = Math.min(end, this.size) - start;
+      assert.ok(size <= 16 * 1024 * 1024);
+      return { arrayBuffer: async () => new ArrayBuffer(size) };
+    },
+  };
+  await h.run("copyImageSource(testFile,ProjectFile.root,new AbortController().signal,()=>{})");
+  assert.equal((await (await h.root.getFileHandle("source.tif")).getFile()).size, 33 * 1024 * 1024);
+  assert.equal((await h.root.getFileHandle("source.tif")).writes, 3);
+});
+test("copy cancellation aborts before subsequent chunks and leaves document unchanged", async () => {
+  const h = harness();
+  await h.run("newProject()");
+  const before = h.run("snapshot()");
+  h.c.testFile = new Blob([new Uint8Array(20 * 1024 * 1024)]);
+  await assert.rejects(
+    h.run(
+      "const cancel=new AbortController();copyImageSource(testFile,ProjectFile.root,cancel.signal,()=>cancel.abort())",
+    ),
+    { name: "AbortError" },
+  );
+  assert.equal(h.run("snapshot()"), before);
+  assert.equal((await (await h.root.getFileHandle("source.tif")).getFile()).size, 0);
+});
+test("v2 opening migrates only metadata and preserves legacy pyramid storage", async () => {
+  const h = harness();
+  await h.run("newProject()");
+  const old = JSON.parse(h.run("serializeProject()"));
+  old.version = 2;
+  old.nextId = 5;
+  old.scans = [
+    {
+      id: 4,
+      layerId: 1,
+      name: "Legacy",
+      sourceName: "old.tif",
+      width: 512,
+      height: 512,
+      tileSize: 512,
+      levels: 1,
+      flipX: false,
+      flipY: false,
+      aligned: true,
+      transform: { tx: 0, ty: 0, scale: 1, rotation: 0 },
+    },
+  ];
+  const scan = await (
+    await h.root.getDirectoryHandle("images")
+  ).getDirectoryHandle("scan-4", { create: true });
+  (await scan.getFileHandle("manifest.json", { create: true })).blob = new Blob([
+    JSON.stringify({
+      complete: true,
+      tileSize: 512,
+      width: 512,
+      height: 512,
+      levels: [{ level: 0, width: 512, height: 512 }],
+    }),
+  ]);
+  const tiles = await scan.getDirectoryHandle("L0", { create: true });
+  tiles.entries = () => {
+    throw Error("cache enumeration");
+  };
+  (await h.root.getFileHandle("project.json")).blob = new Blob([JSON.stringify(old)]);
+  await h.run("openProject()");
+  assert.equal(h.run("State.scans[0].assetMode"), "legacy-pyramid");
+  assert.equal(h.run("State.scans[0].maxLogicalLevel"), 0);
+  assert.equal(h.run("isDirty()"), true);
+  await h.run("saveProject()");
+  assert.equal(
+    JSON.parse(await (await (await h.root.getFileHandle("project.json")).getFile()).text()).version,
+    3,
+  );
+  assert.equal(scan.children.has("source.tif"), false);
+});
+test("failed source metadata inspection never writes a manifest or changes engineering state", async () => {
+  const h = harness();
+  await h.run("newProject()");
+  const before = h.run("snapshot()");
+  h.c.ImageEngine = {
+    request: async () => {
+      throw Error("invalid TIFF metadata");
+    },
+  };
+  h.c.testFile = new Blob([new Uint8Array([73, 73, 42, 0, 0, 0, 0, 0])]);
+  await assert.rejects(h.run("prepareScanAsset(testFile,99,()=>{})"), /invalid TIFF/);
+  assert.equal(h.run("snapshot()"), before);
+  assert.equal((await h.root.getDirectoryHandle("images")).children.has("scan-99"), false);
+});
+test("missing authoritative source preserves copper and Open never walks sparse cache", async () => {
+  const h = harness();
+  await h.run("newProject()");
+  h.run(
+    `State.nextId=12;State.traces=[{id:11,layerId:1,width:1,points:[{x:0,y:0},{x:1,y:1}]}];State.scans=[{id:10,layerId:1,name:'Sparse',sourceName:'large.tif',width:30000,height:20000,tileSize:512,maxLogicalLevel:6,assetMode:'tiff-source',flipX:false,flipY:false,aligned:true,transform:{tx:0,ty:0,scale:1,rotation:0}}];`,
+  );
+  const dir = await (
+    await h.root.getDirectoryHandle("images")
+  ).getDirectoryHandle("scan-10", { create: true });
+  (await dir.getFileHandle("manifest.json", { create: true })).blob = new Blob([
+    JSON.stringify({
+      schema: "pcb-reveng-scan-v1",
+      complete: true,
+      source: "source.tif",
+      sourceSize: 100,
+      width: 30000,
+      height: 20000,
+      tileSize: 512,
+      maxLogicalLevel: 6,
+      cacheVersion: 1,
+      sourceOverviews: [],
+    }),
+  ]);
+  const cache = await dir.getDirectoryHandle("cache-v1", { create: true });
+  for (let i = 0; i < 3000; i++) cache.children.set(i + ".png", null);
+  cache.entries = () => {
+    throw Error("must not walk cached tiles");
+  };
+  cache.values = cache.entries;
+  await h.run("(async()=>{await saveProject();await openProject();})()");
+  assert.equal(h.run("State.traces.length"), 1);
+  assert.equal(h.run("State.scans.length"), 1);
+  assert.match(h.messages.at(-1), /unavailable/);
 });

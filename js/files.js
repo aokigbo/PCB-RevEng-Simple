@@ -58,6 +58,8 @@ function adoptProject(candidate, root, file) {
   ProjectFile.stamp = file ? { lastModified: file.lastModified, size: file.size } : null;
   ProjectFile.assetWarnings.clear();
   Tiles.clear();
+  if (typeof ImageEngine !== "undefined") ImageEngine.reset();
+  ProjectFile.cacheWarning = false;
   resetWorkspace();
 }
 async function emptyProjectDirectory() {
@@ -83,7 +85,7 @@ async function newProject() {
       h = await writeProjectAsset(
         root,
         "project.json",
-        JSON.stringify({ app: "pcb-reveng-simple", version: 2, ...d }, null, 2),
+        JSON.stringify({ app: "pcb-reveng-simple", version: 3, ...d }, null, 2),
       );
     adoptProject(d, root, await h.getFile());
   } catch (e) {
@@ -109,11 +111,25 @@ async function openProject() {
     for (const scan of candidate.scans)
       try {
         const dir = await scanDirectory(scan.id, root);
-        validateManifest((await readJSON(dir, "manifest.json")).value, scan);
+        const manifest = validateManifest((await readJSON(dir, "manifest.json")).value, scan);
+        if (scan.assetMode === "tiff-source") {
+          const source = await (await dir.getFileHandle("source.tif")).getFile();
+          if (
+            source.size !== manifest.sourceSize ||
+            (manifest.sourceLastModified && source.lastModified !== manifest.sourceLastModified)
+          )
+            throw new Error("Source TIFF changed unexpectedly; derived cache will be ignored.");
+        }
       } catch (e) {
         warnings.push(scan.name + ": " + e.message);
       }
     adoptProject(candidate, root, file);
+    if (value.version === 2) {
+      ProjectFile.saved = null;
+      notify(
+        "Opened v2 project. Existing image pyramids are preserved; Save upgrades project.json to v3.",
+      );
+    }
     if (warnings.length)
       notify("Some scan assets are unavailable. Copper is intact. " + warnings.join("; "), true);
   } catch (e) {
@@ -181,7 +197,7 @@ async function importExistingProject(file) {
     for (const photo of migration.photos) {
       showImportProgress("Preparing legacy photograph…", true);
       const blob = await (await fetch(photo.dataURL)).blob();
-      const manifest = await preprocessImage(
+      const manifest = await prepareLegacyImage(
         blob,
         photo.id,
         (p) =>
@@ -194,7 +210,8 @@ async function importExistingProject(file) {
       const scan = migration.document.scans.find((s) => s.id === photo.id);
       scan.width = manifest.width;
       scan.height = manifest.height;
-      scan.levels = manifest.levels.length;
+      scan.maxLogicalLevel = manifest.levels.length - 1;
+      scan.assetMode = "legacy-pyramid";
     }
     const dir = await root.getDirectoryHandle("datasheets");
     for (const a of migration.pdfs) {
@@ -205,13 +222,13 @@ async function importExistingProject(file) {
     }
     const candidate = validateDocument({
         app: "pcb-reveng-simple",
-        version: 2,
+        version: 3,
         ...migration.document,
       }),
       h = await writeProjectAsset(
         root,
         "project.json",
-        JSON.stringify({ app: "pcb-reveng-simple", version: 2, ...candidate }, null, 2),
+        JSON.stringify({ app: "pcb-reveng-simple", version: 3, ...candidate }, null, 2),
       );
     adoptProject(candidate, root, await h.getFile());
     notify("Imported into a new project folder. Original .pcbrev preserved.");
@@ -258,5 +275,27 @@ async function collectGarbage() {
   } finally {
     ProjectFile.busy = false;
     refreshSaveState();
+  }
+}
+
+async function clearDerivedImageCache(scan) {
+  if (
+    scan.assetMode !== "tiff-source" ||
+    ProjectFile.busy ||
+    !confirm(
+      "Clear derived image cache for “" +
+        scan.name +
+        "”? The source TIFF and reconstructed copper are retained.",
+    )
+  )
+    return;
+  try {
+    Tiles.clear();
+    await ImageEngine.request("clear", { root: ProjectFile.root, epoch: ProjectFile.epoch, scan });
+    Tiles.clear();
+    requestRender();
+    notify("Derived image cache cleared. Detail will regenerate as needed.");
+  } catch (e) {
+    notify("Cache could not be cleared: " + e.message, true);
   }
 }

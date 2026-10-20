@@ -1,66 +1,75 @@
-# Multilayer architecture
+# Multilayer sparse TIFF architecture
 
-The v2 refactor replaces the former two-sided embedded-file model. The source of
-truth is a portable project directory. Physical depth, visual evidence, engineering
-geometry and transient view state have distinct responsibilities.
+The source of truth is a portable v3 directory. Physical layers, board-unit copper,
+PDFs and alignment remain engineering data. Image cache state is disposable and
+never appears in history or `project.json`.
 
-| Module           | Responsibility                                                                                 |
-| ---------------- | ---------------------------------------------------------------------------------------------- |
-| document.js      | v2 schema, stable physical layers, ordered via spans, board-unit geometry, lightweight history |
-| legacy-import.js | isolated validation/conversion of v1 and the existing supported upstream subset                |
-| files.js         | folder handles, transactional metadata open/save, asset files, safe explicit cleanup           |
-| image-pyramid.js | pyramid/manifest rules and cancellable import coordinator                                      |
-| image-worker.js  | windowed TIFF decode, sequential PNG tile/pyramid writes, completion marker last               |
-| tile-cache.js    | viewport/LOD requests, bounded concurrency, stale generations, weighted LRU and bitmap release |
-| registration.js  | forward/inverse scan transforms, explicit flips, 3–5 point least-squares similarity            |
-| geometry.js      | board-unit component/pad geometry and copper collision primitives                              |
-| connectivity.js  | per-physical-layer collision passes sharing one union node per via                             |
-| canvas.js        | at most two tiled scans and active-layer reconstruction, independent interaction overlays      |
-| editor.js        | selection, move/copy/paste, corner resize, layer-aware endpoint anchors and tool gestures      |
-| workspace.js     | layer/scan stack, inspectors, view controls, alignment preview, shortcuts and HUD              |
-| attachments.js   | hash-deduplicated PDF files and normal browser viewing                                         |
-| export.js        | BOM and one derived electrical model for Markdown/JSON, streamed ZIP output                    |
-| catalog.js       | small adapted parametric package catalog, materialized into explicit board-unit geometry       |
+| Module                               | Responsibility                                                                        |
+| ------------------------------------ | ------------------------------------------------------------------------------------- |
+| document.js                          | v3 validation, metadata-only v2 migration, layers/geometry/history                    |
+| files.js                             | transactional folder Open/Save, source checks, cache clearing, asset cleanup          |
+| image-pyramid.js                     | logical levels, manifests, 16 MiB streaming source copy, import transaction           |
+| image-source.js                      | TIFF format/block limits, logical geometry, consistent page/SubIFD overviews          |
+| tile-engine.js                       | persistent worker RPC, cancellation, local timing statistics                          |
+| tile-worker.js                       | lazy TIFF lifetimes, bounded block reuse/window sampling, sparse disk reads/writes    |
+| tile-cache.js                        | weighted bitmap LRU, viewport priorities/fairness, generation aborts, parent fallback |
+| legacy-image-worker.js               | manageable PNG/JPEG/v1 materialized image migration only                              |
+| registration.js                      | explicit source transforms, flips and least-squares alignment                         |
+| geometry.js / connectivity.js        | physical-layer collisions and continuous shared via conductors                        |
+| canvas.js / editor.js / workspace.js | image composition, copper editing, layers, controls and shortcuts                     |
+| attachments.js / export.js           | PDF files, normal PDF opening, electrical BOM/context/streamed ZIP                    |
 
-## Electrical truth
+## Import and completeness
 
-Pads and traces participate on one stable layer ID. A visible drill is geometry
-only. A via is one conductor on all depth-ordered layers between its endpoints.
-Each layer gets a geometry collision sweep; touching objects union their conductor
-nodes. Names remain metadata on copper and never create virtual connections.
-Reordering warns if via membership changes. Layer deletion adjusts endpoint spans
-and removes collapsed vias. Copy/resize/move preserve the existing direct editing
-model and layer-aware exact endpoint anchors.
+TIFF copy uses bounded 16 MiB slices with writable backpressure. Only metadata is
+inspected afterward; count/offset tables stay deferred. The manifest is written
+before metadata adoption. Failure/cancellation leaves State unchanged and attempts
+partial-folder removal; safe cleanup handles remaining orphans. `source.tif` is
+authoritative. No TIFF cache files are prerequisites for successful import.
 
-## Memory and disk
+v2 scans migrate to `legacy-pyramid` and retain their existing files. They cannot
+have their only pixels cleared as disposable cache. Small ordinary image imports
+and v1 embedded photographs still use bounded legacy materialization.
 
-No runtime full-size bitmap is created for a large TIFF. A dedicated preprocessing
-worker uses a pinned local geotiff.js build, a two-worker decode pool and uncached
-windowed reads. Source blocks are checked before decoding. L0 writes exact RGB
-pixels into 512-pixel PNG tiles; later levels combine four child tiles at a time.
-The completion manifest is written last. Cancellation terminates preprocessing and
-leaves no scan metadata adoption. Incomplete folders are safe to ignore/clean.
+## Demand-driven image engine
 
-Rendering chooses a level from zoom and scan scale, inverse-transforms the viewport,
-and requests only intersecting tiles for primary and optional comparison. Four
-concurrent tile reads, a 64-entry scheduling batch and request generations prevent
-rapid navigation from accumulating decode work. The weighted LRU targets 512 MiB,
-with a 1 GiB ceiling, and closes discarded/evicted bitmaps.
+The main thread plans logical 512-pixel tiles in source coordinates. Priority is
+visible, fallback, one-ring prefetch, persistence, then only the highest two logical
+overview levels. Each visible class is center-first and interleaved between scans.
+At blend endpoints the hidden image produces no rendering requests. Transform and
+alpha edits never invalidate source-space pixels.
 
-Save only rewrites engineering metadata. Undo references files on disk rather than
-cloning image/PDF data. Cleanup is explicit and limited to app-owned numeric scan
-folders and hash-named PDF files, with current/history/clipboard references retained.
-AI ZIP output reads PDF streams sequentially and awaits destination writes.
+One persistent engine worker shares a decoder pool of at most three workers with
+at most three main-thread tile requests. Source-block size reduces heavy decode
+concurrency to two above 32 MiB and one above 64 MiB; blocks above 128 MiB are
+rejected. Compressed byte counts are checked by indexed async tag reads per block.
+Parsed sources/images stay open (at most three inactive/active source entries under
+normal viewing). Shared decoded block promises use a roughly 96 MiB LRU; in-flight
+aborted promises are not reused by a new viewport.
 
-## Validation limits
+L0 reads native RGB without resampling. Reduced levels map directly into the
+closest consistent TIFF page/SubIFD overview, or the original TIFF. GeoTIFF.js 3
+allocates its input raster before reducing it, so reduced reads are split into
+source windows of at most roughly 1024 square pixels and sampled bilinearly into
+a 512-pixel output tile. No child cache levels are generated as dependencies.
 
-The implementation checks metadata, manifests and on-demand files, without reading
-every tile at startup. Synthetic stripped, tiled, Deflate, LZW and BigTIFF fixtures
-exercise import and full-resolution pixels. Large compressed/decompressed TIFF
-blocks are rejected rather than exceeding import budgets. PNG/JPEG import and PDF
-size have conservative caps. Actual throughput/storage usage on a 15 GB board and
-an 8 GB computer remain a manual hardware qualification task.
+Memory miss checks disk, then source. Missing/damaged cache PNGs regenerate.
+Bitmap delivery occurs before PNG encoding/write; persistence has a bounded eight
+canvas backlog, runs when decode work is quiet, and is optional. Cache write failure
+warns once per project and does not prevent rendering. New viewport generations
+abort obsolete work and reject/close stale results; coarse parents fill detail holes.
+The bitmap LRU targets 512 MiB (1 GiB emergency ceiling), closes evictions, and
+preferentially retains coarse navigation tiles. `TileStats` is local-only profiling.
 
-No stored AI graph, account service, backend, multi-user system, manufacturing
-output, perspective warp, automatic trace recognition or built-in PDF viewer is
-introduced. The only remaining front/back interpretation lives in legacy import.
+## Data integrity and limits
+
+Open reads project/manifest metadata and source file attributes, never cache trees,
+full TIFFs or checksums. TIFF parsers start only for scans requested for display.
+Source size/timestamp mismatch refuses stale disk cache and warns; missing sources
+leave copper available. Saves and cache operations are independent. Undo retains
+asset references; explicit cleanup removes only unreferenced app-owned folders/PDFs.
+
+Tests use real manageable RGB TIFFs, deferred tags, LZW/Deflate, BigTIFF, page and
+SubIFD overviews. Synthetic correctness is not a 15 GB/8 GB hardware throughput or
+peak-memory qualification. No native code, image daemon, backend, GPU preprocessing,
+account system or cloud dependency is introduced.

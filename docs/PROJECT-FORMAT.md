@@ -1,11 +1,11 @@
-# PCB RevEng Simple project format v2
+# PCB RevEng Simple project format v3
 
 A project is a directory, with UTF-8 `project.json` as its engineering document:
 
 ```json
 {
   "app": "pcb-reveng-simple",
-  "version": 2,
+  "version": 3,
   "name": "Board",
   "nextId": 3,
   "calibration": null,
@@ -54,43 +54,65 @@ disconnected copper produce warnings. Derived nets are never stored.
 ## Scan files
 
 Each scan contains `id`, `layerId`, `name`, `sourceName`, integer `width`, `height`,
-`tileSize:512`, integer `levels`, `flipX`, `flipY`, `aligned`, and
-`transform:{tx,ty,scale,rotation}`. Reflection acts in source pixels, followed by
-positive uniform scale, rotation, and translation into board units. Alignment
-stores the resulting transform only; there are no dependencies between scans.
+`tileSize:512`, integer `maxLogicalLevel`, `assetMode`, `flipX`, `flipY`, `aligned`,
+and `transform:{tx,ty,scale,rotation}`. Reflection acts in source pixels, followed
+by positive uniform scale, rotation, and translation. Alignment and blending never
+change cached source pixels.
 
-The path is derived exclusively from the numeric ID:
+New TIFF scans use `assetMode:"tiff-source"`:
 
 ```text
-images/scan-21/manifest.json
-images/scan-21/L0/0_0.png
-images/scan-21/L0/1_0.png
-images/scan-21/L1/0_0.png
+images/scan-21/source.tif                 authoritative, project-owned copy
+images/scan-21/manifest.json              completion/identity metadata
+images/scan-21/cache-v1/L0/0_0.png         optional derived native pixels
+images/scan-21/cache-v1/L3/0_0.png         optional direct reduced tile
 ```
 
-L0 has the source dimensions. Each subsequent level uses ceil(width/2),
-ceil(height/2), until both dimensions fit within 512 pixels. Edge tiles contain
-only their valid source extent. All levels use PNG; L0 is lossless.
-
-The manifest is the completion marker and is written after every required tile:
+The source copy is streaming (16 MiB slices), cancellable and completed before
+metadata inspection. The manifest is written last, before the scan enters State:
 
 ```json
 {
+  "schema": "pcb-reveng-scan-v1",
   "complete": true,
-  "width": 1025,
-  "height": 769,
+  "source": "source.tif",
+  "sourceName": "PCB_Layer_04.tif",
+  "sourceSize": 1784293376,
+  "sourceLastModified": 1792440000000,
+  "width": 28500,
+  "height": 19800,
+  "samplesPerPixel": 3,
+  "bitsPerSample": 8,
+  "photometricInterpretation": 2,
+  "baseImage": 0,
   "tileSize": 512,
-  "levels": [
-    { "level": 0, "width": 1025, "height": 769 },
-    { "level": 1, "width": 513, "height": 385 },
-    { "level": 2, "width": 257, "height": 193 }
-  ]
+  "maxLogicalLevel": 6,
+  "cacheVersion": 1,
+  "sourceOverviews": []
 }
 ```
 
-Incomplete imports are never adopted into the document. Original TIFF paths and
-file handles are not stored. Open checks manifests, while individual tiles are
-checked on demand. Missing scan files do not discard engineering metadata.
+`complete` describes authoritative data, never cache completeness. Logical level z
+uses factor 2^z; dimensions use ceil division. L0 is exact native RGB; reduced
+levels use bounded-window bilinear sampling directly from the source/closest
+suitable TIFF overview. Overview descriptors contain `{page,level,width,height}`
+or `{offset,level,width,height}` for SubIFDs. Unrelated full-size pages are ignored.
+Cache tiles are lossless PNGs and may all be absent/deleted. A missing/corrupt
+cache tile regenerates. Source size/timestamp mismatch prevents stale disk-cache
+use and reports an image error; missing sources leave copper available.
+
+Opening v2 migrates scan `levels` to `maxLogicalLevel:levels-1` and assigns
+`assetMode:"legacy-pyramid"`. Save writes v3 metadata; existing `L0/`, `L1/` folders
+and original completion manifests are preserved without manufacturing a TIFF.
+Small PNG/JPEG imports and v1 photograph migration also use this legacy mode.
+They retain the bounded-size materialized-pyramid importer. Cache clearing is
+available only for source-backed scans, since legacy tiles are authoritative.
+
+Open reads project metadata, manifests and cheap source file attributes; it never
+walks tile directories, hashes TIFFs, or opens all TIFF decoders. Save/Undo never
+include source bytes, cache contents or tile lists. Cache work never changes dirty
+state. Cleanup removes entire unreferenced scan folders only after history releases
+them. Keep the complete project directory when moving/backing it up.
 
 ## Datasheets
 

@@ -13,14 +13,16 @@ it, and drag rows to reorder. Reordering asks before changing any via's physical
 span. Deleting a layer asks about the affected scans, components and traces; via
 spans are shortened or removed if fewer than two layers remain. Undo restores it.
 
-Use + Add image inside a layer to choose a TIFF. Preparation writes a multilevel
-PNG tile pyramid to disk. Progress and Cancel are available while it works. The
-original TIFF is unnecessary afterward. Several scans may describe the same layer:
+Use + Add image inside a layer to choose a TIFF. The app copies it into the project
+with progress and Cancel, then reads image information. There is no full-image
+preprocessing wait. Detail loads as you pan/zoom, with coarse cached evidence used
+while finer tiles arrive. The external original is unnecessary afterward. Several scans may describe the same layer:
 populated, partially sanded, exposed copper, and so on. PNG/JPEG also work for
 smaller images. Very large scans should use TIFF with reasonably sized strips/tiles.
 
 Click a scan to make it primary. Its ⋯ properties rename it, adjust its transform,
-flip it, align it or delete it. Removing a scan leaves the layer's copper intact.
+flip it, align it or delete it. Source-backed scans also offer **Clear Derived
+Image Cache**, which retains the source and copper; tiles regenerate as needed. Removing a scan leaves the layer's copper intact.
 The first scan establishes the initial coordinate system, which survives its deletion.
 
 ## Inspection and alignment

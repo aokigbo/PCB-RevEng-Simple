@@ -16,15 +16,29 @@ function validateManifest(m, scan) {
     m.complete !== true ||
     m.tileSize !== 512 ||
     m.width !== scan.width ||
-    m.height !== scan.height ||
-    JSON.stringify(m.levels) !== JSON.stringify(levels)
+    m.height !== scan.height
   )
-    throw new Error("Incomplete or invalid tile manifest for " + scan.name);
+    throw new Error("Incomplete or invalid image manifest for " + scan.name);
+  if (scan.assetMode === "tiff-source") {
+    if (
+      m.schema !== "pcb-reveng-scan-v1" ||
+      m.source !== "source.tif" ||
+      m.cacheVersion !== 1 ||
+      m.maxLogicalLevel !== scan.maxLogicalLevel ||
+      !Number.isSafeInteger(m.sourceSize) ||
+      m.sourceSize < 8 ||
+      !Array.isArray(m.sourceOverviews) ||
+      m.sourceOverviews.length > 32
+    )
+      throw new Error("Invalid TIFF source manifest for " + scan.name);
+  } else if (JSON.stringify(m.levels) !== JSON.stringify(levels))
+    throw new Error("Incomplete or invalid legacy tile manifest for " + scan.name);
   return m;
 }
+
 const ImportJob = { worker: null, cancel: null };
-async function preprocessImage(file, id, onProgress = () => {}, root = ProjectFile.root) {
-  const worker = new Worker("js/image-worker.js");
+async function prepareLegacyImage(file, id, onProgress = () => {}, root = ProjectFile.root) {
+  const worker = new Worker("js/legacy-image-worker.js");
   ImportJob.worker = worker;
   try {
     return await new Promise((resolve, reject) => {
@@ -46,6 +60,61 @@ async function preprocessImage(file, id, onProgress = () => {}, root = ProjectFi
     ImportJob.cancel = null;
   }
 }
+async function copyImageSource(file, dir, signal, onProgress) {
+  const w = await (await dir.getFileHandle("source.tif", { create: true })).createWritable();
+  try {
+    const chunkSize = 16 * 1024 * 1024;
+    for (let offset = 0; offset < file.size; offset += chunkSize) {
+      if (signal.aborted) throw new DOMException("Image copy cancelled.", "AbortError");
+      const chunk = await file.slice(offset, offset + chunkSize).arrayBuffer();
+      if (signal.aborted) throw new DOMException("Image copy cancelled.", "AbortError");
+      await w.write(chunk);
+      onProgress({
+        message:
+          "Copying image… " +
+          (Math.min(file.size, offset + chunkSize) / 1048576).toFixed(1) +
+          " MiB" +
+          " / " +
+          (file.size / 1048576).toFixed(1) +
+          " MiB",
+        done: Math.min(file.size, offset + chunkSize),
+        total: file.size,
+      });
+    }
+    if (signal.aborted) throw new DOMException("Image copy cancelled.", "AbortError");
+    await w.close();
+  } catch (e) {
+    await w.abort().catch(() => {});
+    throw e;
+  }
+}
+async function prepareScanAsset(file, id, onProgress, root = ProjectFile.root) {
+  const head = new Uint8Array(await file.slice(0, 4).arrayBuffer()),
+    tiff = (head[0] === 73 && head[1] === 73) || (head[0] === 77 && head[1] === 77);
+  if (!tiff) return prepareLegacyImage(file, id, onProgress, root);
+  const controller = new AbortController(),
+    images = await root.getDirectoryHandle("images", { create: true }),
+    dir = await images.getDirectoryHandle("scan-" + id, { create: true });
+  ImportJob.cancel = () => controller.abort();
+  try {
+    await copyImageSource(file, dir, controller.signal, onProgress);
+    onProgress({ message: "Reading image information…", done: 1, total: 1 });
+    const manifest = await ImageEngine.request(
+      "inspect",
+      { root, scanId: id, sourceName: file.name },
+      controller.signal,
+    );
+    if (controller.signal.aborted) throw new DOMException("Image import cancelled.", "AbortError");
+    await writeProjectAsset(dir, "manifest.json", JSON.stringify(manifest));
+    if (controller.signal.aborted) throw new DOMException("Image import cancelled.", "AbortError");
+    return manifest;
+  } catch (e) {
+    await images.removeEntry("scan-" + id, { recursive: true }).catch(() => {});
+    throw e;
+  } finally {
+    ImportJob.cancel = null;
+  }
+}
 async function importScanFile(file, layerId) {
   if (ProjectFile.busy || !ProjectFile.root) return;
   ProjectFile.busy = true;
@@ -63,8 +132,8 @@ async function importScanFile(file, layerId) {
         throw e;
       }
     }
-    showImportProgress("Preparing image…", true);
-    const manifest = await preprocessImage(file, id, (p) =>
+    showImportProgress("Copying image…", true);
+    const manifest = await prepareScanAsset(file, id, (p) =>
       showImportProgress(p.message + " · " + Math.round((p.done / p.total) * 100) + "%", true),
     );
     ProjectFile.busy = false;
@@ -78,7 +147,8 @@ async function importScanFile(file, layerId) {
         width: manifest.width,
         height: manifest.height,
         tileSize: 512,
-        levels: manifest.levels.length,
+        maxLogicalLevel: manifest.maxLogicalLevel ?? manifest.levels.length - 1,
+        assetMode: manifest.source ? "tiff-source" : "legacy-pyramid",
         flipX: false,
         flipY: false,
         aligned: State.scans.length === 0,
